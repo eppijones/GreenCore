@@ -1,0 +1,281 @@
+/* Putting Launch Monitor - 3D Simulator Styles */
+
+:root {
+    --color-bg: #0a1a0f;
+    --color-panel: rgba(10, 30, 15, 0.85);
+    --color-panel-border: rgba(80, 180, 100, 0.3);
+    --color-accent: #4ade80;
+    --color-accent-dim: #22c55e;
+    --color-text: #e8f5e9;
+    --color-text-dim: #a5d6a7;
+    --color-warning: #fbbf24;
+    --color-error: #ef4444;
+    --color-success: #10b981;
+    
+    --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-sans);
+    background: var(--color-bg);
+    color: var(--color-text);
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+}
+
+#app {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
+#canvas-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+}
+
+#canvas-container canvas {
+    display: block;
+}
+
+/* Overlay UI */
+#overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+}
+
+#overlay > * {
+    pointer-events: auto;
+}
+
+/* Connection Status */
+#connection-status {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--color-panel);
+    border: 1px solid var(--color-panel-border);
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+#connection-status .indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--color-error);
+    box-shadow: 0 0 8px var(--color-error);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+#connection-status.connected .indicator {
+    background: var(--color-success);
+    box-shadow: 0 0 8px var(--color-success);
+}
+
+#connection-status.connected .text {
+    color: var(--color-success);
+}
+
+#connection-status.disconnected .text {
+    color: var(--color-error);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Panel Styles */
+.panel {
+    background: var(--color-panel);
+    border: 1px solid var(--color-panel-border);
+    border-radius: 12px;
+    padding: 20px;
+    backdrop-filter: blur(10px);
+}
+
+/* Shot Stats Panel */
+#shot-stats {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    min-width: 200px;
+}
+
+#shot-stats h2 {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--color-accent);
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--color-panel-border);
+}
+
+.stat {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 12px;
+}
+
+.stat:last-child {
+    margin-bottom: 0;
+}
+
+.stat .label {
+    flex: 1;
+    font-size: 13px;
+    color: var(--color-text-dim);
+}
+
+.stat .value {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--color-text);
+    min-width: 60px;
+    text-align: right;
+}
+
+.stat .unit {
+    font-size: 12px;
+    color: var(--color-text-dim);
+    margin-left: 4px;
+    min-width: 30px;
+}
+
+/* Result Message */
+#result-message {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+}
+
+#result-message.hidden {
+    display: none;
+}
+
+#result-message .text {
+    font-size: 48px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    text-shadow: 0 0 20px currentColor, 0 0 40px currentColor;
+    animation: fadeInScale 0.5s ease-out;
+}
+
+#result-message.success .text {
+    color: var(--color-accent);
+}
+
+#result-message.miss .text {
+    color: var(--color-warning);
+    font-size: 36px;
+}
+
+@keyframes fadeInScale {
+    0% {
+        opacity: 0;
+        transform: scale(0.5);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* Instructions Panel */
+#instructions {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    font-size: 12px;
+    opacity: 0.7;
+    transition: opacity 0.3s;
+}
+
+#instructions:hover {
+    opacity: 1;
+}
+
+#instructions h3 {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--color-accent);
+    margin-bottom: 10px;
+}
+
+#instructions p {
+    color: var(--color-text-dim);
+    margin-bottom: 4px;
+}
+
+/* Animations */
+.animate-in {
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Trail effect for ball */
+.ball-trail {
+    position: absolute;
+    pointer-events: none;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    #shot-stats {
+        top: auto;
+        bottom: 20px;
+        right: 20px;
+        left: 20px;
+        min-width: auto;
+    }
+    
+    #instructions {
+        display: none;
+    }
+    
+    #result-message .text {
+        font-size: 32px;
+    }
+}
