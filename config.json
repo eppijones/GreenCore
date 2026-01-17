@@ -1,20 +1,14 @@
 {
   "roi": [
-    208,
-    155,
-    275,
-    483
+    152,
+    77,
+    1112,
+    497
   ],
-  "target_line_p1": [
-    310,
-    613
-  ],
-  "target_line_p2": [
-    313,
-    173
-  ],
-  "pixels_per_meter": 352.0227265390688,
+  "target_line_p1": null,
+  "target_line_p2": null,
+  "pixels_per_meter": 500.0,
   "ground_depth": 0.5,
   "depth_tolerance": 0.05,
-  "forward_angle_rad": -1.5639782506274118
+  "forward_angle_rad": 0.0
 }

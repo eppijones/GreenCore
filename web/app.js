@@ -1,7 +1,11 @@
 /**
- * Putting Launch Monitor - 3D Simulator
+ * Pro Putt Sim - Minimalist Tech Refactor
  * 
- * Three.js based 3D putting visualization with WebSocket communication.
+ * Goals:
+ * - Zero visual clutter (no terrain, trees, skybox)
+ * - Flat physics for pure stroke analysis
+ * - High-contrast "Dark Mode" aesthetic
+ * - Dynamic aiming lines and data visualization
  */
 
 import * as THREE from 'three';
@@ -12,344 +16,285 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // ============================================================================
 
 const CONFIG = {
-    // WebSocket
-    wsUrl: 'ws://localhost:8765',
-    wsReconnectInterval: 2000,
-    
     // Physics
-    friction: 0.12,              // Rolling friction coefficient
-    stopVelocity: 0.01,          // Velocity threshold to stop (m/s)
-    holeRadius: 0.054,           // Regulation hole radius (m)
-    holeCaptureSpeed: 0.8,       // Max speed to fall in hole (m/s)
-    ballRadius: 0.02135,         // Golf ball radius (m)
+    friction: 0.08,
+    stopVelocity: 0.01,
+    holeRadius: 0.054,      // 4.25 inch
+    holeCaptureSpeed: 0.8,
+    ballRadius: 0.02135,
+    gravity: 9.81,
     
-    // Simulation
-    timeScale: 1.0,              // Time multiplier
-    maxSimTime: 30,              // Max simulation time (seconds)
+    // Dimensions
+    greenRadius: 4.0,       // 4m radius green
+    holeDistance: 3.0,      // 3m putt
     
-    // Scene
-    greenWidth: 4,               // Green width (m)
-    greenLength: 8,              // Green length (m)
-    holeDistance: 3,             // Distance from start to hole (m)
+    // Visuals
+    themeColor: 0x4ade80,   // Neon Green
+    gridColor: 0xffffff,
+    gridOpacity: 0.1,
+    bgColor: 0x050505,
 };
 
 // ============================================================================
-// Application State
+// State
 // ============================================================================
 
 const state = {
-    // Ball physics
     ball: {
         position: new THREE.Vector3(0, CONFIG.ballRadius, 0),
         velocity: new THREE.Vector2(0, 0),
         isRolling: false,
-        startPosition: new THREE.Vector3(0, CONFIG.ballRadius, 0),
     },
-    
-    // Shot data
-    lastShot: null,
-    totalDistance: 0,
-    
-    // Connection
     ws: null,
     connected: false,
-    
-    // Animation
     clock: new THREE.Clock(),
+    showAimLines: true,
 };
 
 // ============================================================================
-// Three.js Setup
+// Three.js Globals
 // ============================================================================
 
 let scene, camera, renderer, controls;
-let ballMesh, holeMesh, greenMesh, flagMesh;
+let ballMesh, holeMesh, greenMesh;
+let aimLineGroup;
+
+// ============================================================================
+// Initialization
+// ============================================================================
+
+function init() {
+    initScene();
+    createCourse();
+    createAimingGuides();
+    setupWebSocket();
+    setupEvents();
+    
+    // Hide loading screen
+    setTimeout(() => {
+        document.getElementById('loading').classList.add('hidden');
+    }, 500);
+    
+    animate();
+}
 
 function initScene() {
-    // Scene
+    // 1. Scene
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a1a0f);
-    scene.fog = new THREE.Fog(0x0a1a0f, 10, 30);
-    
-    // Camera
-    camera = new THREE.PerspectiveCamera(
-        45,
-        window.innerWidth / window.innerHeight,
-        0.1,
-        100
-    );
-    camera.position.set(0, 5, 6);
-    camera.lookAt(0, 0, 0);
-    
-    // Renderer
-    renderer = new THREE.WebGLRenderer({ 
-        antialias: true,
-        alpha: true,
-    });
+    scene.background = new THREE.Color(CONFIG.bgColor);
+    scene.fog = new THREE.FogExp2(CONFIG.bgColor, 0.08); // Fade distant grid
+
+    // 2. Camera (Player perspective)
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    resetCamera();
+
+    // 3. Renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    
     document.getElementById('canvas-container').appendChild(renderer.domElement);
-    
-    // Controls
-    controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-    controls.maxPolarAngle = Math.PI / 2 - 0.1;
-    controls.minDistance = 2;
-    controls.maxDistance = 15;
-    controls.target.set(0, 0, -1);
-    
-    // Lights
-    setupLights();
-    
-    // Objects
-    createGreen();
-    createHole();
-    createBall();
-    createFlag();
-    createEnvironment();
-    
-    // Events
-    window.addEventListener('resize', onWindowResize);
-    window.addEventListener('keydown', onKeyDown);
-}
 
-function setupLights() {
-    // Ambient light
-    const ambient = new THREE.AmbientLight(0x4a7c59, 0.5);
+    // 4. Lighting (Dramatic studio setup)
+    const ambient = new THREE.AmbientLight(0xffffff, 0.2);
     scene.add(ambient);
+
+    const spotLight = new THREE.SpotLight(0xffffff, 2.0);
+    spotLight.position.set(0, 8, -1.5); // Center over putt line
+    spotLight.angle = Math.PI / 4;
+    spotLight.penumbra = 0.5;
+    spotLight.decay = 1;
+    spotLight.distance = 20;
+    spotLight.castShadow = true;
+    spotLight.shadow.mapSize.width = 2048;
+    spotLight.shadow.mapSize.height = 2048;
+    scene.add(spotLight);
+
+    // Rim light for ball definition
+    const rimLight = new THREE.DirectionalLight(CONFIG.themeColor, 0.5);
+    rimLight.position.set(-5, 2, -5);
+    scene.add(rimLight);
     
-    // Main directional light (sun)
-    const sun = new THREE.DirectionalLight(0xfff5e6, 1.2);
-    sun.position.set(5, 10, 5);
-    sun.castShadow = true;
-    sun.shadow.mapSize.width = 2048;
-    sun.shadow.mapSize.height = 2048;
-    sun.shadow.camera.near = 0.5;
-    sun.shadow.camera.far = 50;
-    sun.shadow.camera.left = -10;
-    sun.shadow.camera.right = 10;
-    sun.shadow.camera.top = 10;
-    sun.shadow.camera.bottom = -10;
-    sun.shadow.bias = -0.0001;
-    scene.add(sun);
-    
-    // Fill light
-    const fill = new THREE.DirectionalLight(0x6fa8dc, 0.3);
-    fill.position.set(-5, 5, -5);
-    scene.add(fill);
-    
-    // Rim light
-    const rim = new THREE.DirectionalLight(0xffd700, 0.2);
-    rim.position.set(0, 2, -10);
-    scene.add(rim);
+    // 5. Minimal Orbit Controls (Restricted)
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.enablePan = false;
+    controls.enableZoom = true;
+    controls.minDistance = 1.0;
+    controls.maxDistance = 10.0;
+    controls.maxPolarAngle = Math.PI / 2 - 0.1; // Don't go below ground
+    controls.target.set(0, 0, -CONFIG.holeDistance / 2); // Look at mid-putt
 }
 
-function createGreen() {
-    // Main green surface
-    const greenGeometry = new THREE.PlaneGeometry(
-        CONFIG.greenWidth,
-        CONFIG.greenLength,
-        32,
-        64
-    );
-    
-    // Add subtle undulation
-    const positions = greenGeometry.attributes.position.array;
-    for (let i = 0; i < positions.length; i += 3) {
-        const x = positions[i];
-        const z = positions[i + 1];
-        positions[i + 2] = Math.sin(x * 2) * Math.cos(z * 1.5) * 0.01;
-    }
-    greenGeometry.computeVertexNormals();
-    
-    // Green material with grass-like appearance
-    const greenMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2d5a27,
-        roughness: 0.9,
-        metalness: 0.0,
-    });
-    
-    greenMesh = new THREE.Mesh(greenGeometry, greenMaterial);
-    greenMesh.rotation.x = -Math.PI / 2;
-    greenMesh.position.y = 0;
-    greenMesh.receiveShadow = true;
-    scene.add(greenMesh);
-    
-    // Fringe/rough around green
-    const fringeGeometry = new THREE.PlaneGeometry(
-        CONFIG.greenWidth + 2,
-        CONFIG.greenLength + 2
-    );
-    const fringeMaterial = new THREE.MeshStandardMaterial({
-        color: 0x3d6f2f,
-        roughness: 1.0,
-        metalness: 0.0,
-    });
-    const fringe = new THREE.Mesh(fringeGeometry, fringeMaterial);
-    fringe.rotation.x = -Math.PI / 2;
-    fringe.position.y = -0.002;
-    fringe.receiveShadow = true;
-    scene.add(fringe);
+function resetCamera() {
+    // Position behind ball, looking down the line
+    camera.position.set(0, 1.2, 1.5);
+    camera.lookAt(0, 0, -CONFIG.holeDistance);
 }
 
-function createHole() {
-    // Hole (dark cylinder sunk into ground)
-    const holeGeometry = new THREE.CylinderGeometry(
-        CONFIG.holeRadius,
-        CONFIG.holeRadius,
-        0.1,
-        32
-    );
-    const holeMaterial = new THREE.MeshStandardMaterial({
-        color: 0x0a0a0a,
-        roughness: 1.0,
-        metalness: 0.0,
-    });
-    
-    holeMesh = new THREE.Mesh(holeGeometry, holeMaterial);
-    holeMesh.position.set(0, -0.05, -CONFIG.holeDistance);
-    scene.add(holeMesh);
-    
-    // Hole rim (white edge)
-    const rimGeometry = new THREE.RingGeometry(
-        CONFIG.holeRadius,
-        CONFIG.holeRadius + 0.005,
-        32
-    );
-    const rimMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 0.5,
-        metalness: 0.0,
-        side: THREE.DoubleSide,
-    });
-    const rim = new THREE.Mesh(rimGeometry, rimMaterial);
-    rim.rotation.x = -Math.PI / 2;
-    rim.position.set(0, 0.001, -CONFIG.holeDistance);
-    scene.add(rim);
-}
+// ============================================================================
+// Object Creation
+// ============================================================================
 
-function createBall() {
-    // Golf ball
-    const ballGeometry = new THREE.SphereGeometry(CONFIG.ballRadius, 32, 32);
-    const ballMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 0.2,
-        metalness: 0.0,
-    });
+function createCourse() {
+    // 1. The "Green" - Minimalist Grid Disc
+    const geometry = new THREE.CircleGeometry(CONFIG.greenRadius, 64);
     
-    ballMesh = new THREE.Mesh(ballGeometry, ballMaterial);
-    ballMesh.position.copy(state.ball.position);
-    ballMesh.castShadow = true;
-    scene.add(ballMesh);
-}
-
-function createFlag() {
-    // Flag pole
-    const poleGeometry = new THREE.CylinderGeometry(0.005, 0.005, 1.5, 8);
-    const poleMaterial = new THREE.MeshStandardMaterial({
-        color: 0xdddddd,
-        roughness: 0.3,
-        metalness: 0.8,
-    });
-    const pole = new THREE.Mesh(poleGeometry, poleMaterial);
-    pole.position.set(0, 0.75, -CONFIG.holeDistance);
-    pole.castShadow = true;
-    scene.add(pole);
-    
-    // Flag
-    const flagGeometry = new THREE.PlaneGeometry(0.25, 0.15);
-    const flagMaterial = new THREE.MeshStandardMaterial({
-        color: 0xef4444,
-        roughness: 0.5,
-        metalness: 0.0,
-        side: THREE.DoubleSide,
-    });
-    flagMesh = new THREE.Mesh(flagGeometry, flagMaterial);
-    flagMesh.position.set(0.125, 1.42, -CONFIG.holeDistance);
-    flagMesh.castShadow = true;
-    scene.add(flagMesh);
-}
-
-function createEnvironment() {
-    // Ground plane extending beyond green
-    const groundGeometry = new THREE.PlaneGeometry(50, 50);
-    const groundMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2a4a1f,
-        roughness: 1.0,
-        metalness: 0.0,
-    });
-    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.01;
-    ground.receiveShadow = true;
-    scene.add(ground);
-    
-    // Sky dome gradient (simple)
-    const skyGeometry = new THREE.SphereGeometry(40, 32, 32);
-    const skyMaterial = new THREE.ShaderMaterial({
+    // Custom grid shader material
+    const material = new THREE.ShaderMaterial({
         uniforms: {
-            topColor: { value: new THREE.Color(0x1a3a20) },
-            bottomColor: { value: new THREE.Color(0x0a1a0f) },
+            color: { value: new THREE.Color(CONFIG.gridColor) },
+            opacity: { value: CONFIG.gridOpacity },
+            scale: { value: 20.0 }, // Grid density
         },
         vertexShader: `
-            varying vec3 vWorldPosition;
+            varying vec2 vUv;
             void main() {
-                vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-                vWorldPosition = worldPosition.xyz;
+                vUv = uv;
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
             }
         `,
         fragmentShader: `
-            uniform vec3 topColor;
-            uniform vec3 bottomColor;
-            varying vec3 vWorldPosition;
+            uniform vec3 color;
+            uniform float opacity;
+            uniform float scale;
+            varying vec2 vUv;
+            
             void main() {
-                float h = normalize(vWorldPosition).y;
-                gl_FragColor = vec4(mix(bottomColor, topColor, max(h, 0.0)), 1.0);
+                // Centered UVs
+                vec2 uv = (vUv - 0.5) * scale;
+                
+                // Grid lines
+                vec2 grid = abs(fract(uv - 0.5) - 0.5) / fwidth(uv);
+                float line = min(grid.x, grid.y);
+                float alpha = 1.0 - min(line, 1.0);
+                
+                // Radial fade
+                float dist = length(vUv - 0.5) * 2.0;
+                float fade = 1.0 - smoothstep(0.8, 1.0, dist);
+                
+                gl_FragColor = vec4(color, opacity * alpha * fade);
             }
         `,
-        side: THREE.BackSide,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: false, // Don't block shadow receiver
     });
-    const sky = new THREE.Mesh(skyGeometry, skyMaterial);
-    scene.add(sky);
+
+    greenMesh = new THREE.Mesh(geometry, material);
+    greenMesh.rotation.x = -Math.PI / 2;
+    greenMesh.position.y = 0.001; // Just above zero
+    scene.add(greenMesh);
+    
+    // 2. Shadow Catcher (Invisible plane to receive shadows)
+    const shadowGeo = new THREE.PlaneGeometry(20, 20);
+    const shadowMat = new THREE.ShadowMaterial({ opacity: 0.3 });
+    const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
+    shadowPlane.rotation.x = -Math.PI / 2;
+    shadowPlane.receiveShadow = true;
+    scene.add(shadowPlane);
+
+    // 3. The Hole
+    const holeGeo = new THREE.RingGeometry(CONFIG.holeRadius, CONFIG.holeRadius + 0.005, 32);
+    const holeMat = new THREE.MeshBasicMaterial({ color: CONFIG.themeColor });
+    const holeRing = new THREE.Mesh(holeGeo, holeMat);
+    holeRing.rotation.x = -Math.PI / 2;
+    holeRing.position.set(0, 0.002, -CONFIG.holeDistance);
+    scene.add(holeRing);
+    
+    // Hole depth (black cylinder)
+    const cupGeo = new THREE.CylinderGeometry(CONFIG.holeRadius, CONFIG.holeRadius, 0.1, 32);
+    const cupMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    const cup = new THREE.Mesh(cupGeo, cupMat);
+    cup.position.set(0, -0.05, -CONFIG.holeDistance);
+    scene.add(cup);
+
+    // 4. The Ball
+    const ballGeo = new THREE.SphereGeometry(CONFIG.ballRadius, 32, 32);
+    const ballMat = new THREE.MeshStandardMaterial({ 
+        color: 0xffffff, 
+        roughness: 0.2,
+        metalness: 0.1 
+    });
+    ballMesh = new THREE.Mesh(ballGeo, ballMat);
+    ballMesh.castShadow = true;
+    resetBall();
+    scene.add(ballMesh);
+}
+
+function createAimingGuides() {
+    aimLineGroup = new THREE.Group();
+    scene.add(aimLineGroup);
+    
+    // 1. Center Line (Ball to Hole)
+    // Dashed line style
+    const points = [];
+    points.push(new THREE.Vector3(0, 0.005, 0));
+    points.push(new THREE.Vector3(0, 0.005, -CONFIG.holeDistance));
+    
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineDashedMaterial({
+        color: 0xffffff,
+        linewidth: 1,
+        scale: 1,
+        dashSize: 0.1,
+        gapSize: 0.1,
+        opacity: 0.3,
+        transparent: true
+    });
+    
+    const centerLine = new THREE.Line(geometry, material);
+    centerLine.computeLineDistances();
+    aimLineGroup.add(centerLine);
+    
+    // 2. Distance Markers (0.5m increments)
+    for (let d = 0.5; d < CONFIG.holeDistance; d += 0.5) {
+        const markerGeo = new THREE.PlaneGeometry(0.02, 0.1);
+        const markerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.2, transparent: true });
+        const marker = new THREE.Mesh(markerGeo, markerMat);
+        marker.rotation.x = -Math.PI / 2;
+        marker.position.set(0, 0.004, -d);
+        aimLineGroup.add(marker);
+        
+        // Text label could be added here if using a font loader
+    }
 }
 
 // ============================================================================
-// Physics & Animation
+// Physics (Simplified Flat Surface)
 // ============================================================================
 
 function startShot(speedMps, directionDeg) {
-    // Reset ball position
-    resetBall();
+    if (state.ball.isRolling) return; // Prevent double hits
     
-    // Convert direction from degrees to radians
-    // Direction is relative to target line (forward = -Z in Three.js)
-    // Positive = right of target
+    // Convert degrees to radians (0 deg = straight to hole = -Z)
+    // Standard Math: 0 is +X. We want 0 to be -Z.
+    // So angle = directionDeg + 90 (to align with Z axis rotation logic)
+    // Actually simpler: 
+    // z component = -cos(angle)
+    // x component = sin(angle)
+    
     const angleRad = (directionDeg * Math.PI) / 180;
     
-    // Calculate velocity components
-    // Forward direction is -Z in Three.js
     state.ball.velocity.x = speedMps * Math.sin(angleRad);
-    state.ball.velocity.y = -speedMps * Math.cos(angleRad);  // -Z is forward
+    state.ball.velocity.y = -speedMps * Math.cos(angleRad); // Y is Z in 2D calc
     
     state.ball.isRolling = true;
-    state.totalDistance = 0;
     
-    console.log(`Shot: ${speedMps.toFixed(2)} m/s, ${directionDeg.toFixed(1)}°`);
+    console.log(`Shot: ${speedMps.toFixed(2)}m/s @ ${directionDeg.toFixed(1)}°`);
+    
+    // Show aiming ray of actual shot
+    showShotRay(angleRad, speedMps);
 }
 
-function updateBallPhysics(deltaTime) {
+function updatePhysics(dt) {
     if (!state.ball.isRolling) return;
     
-    const dt = deltaTime * CONFIG.timeScale;
+    // Time step
+    const step = Math.min(dt, 0.05);
     
-    // Get current speed
+    // Simple deceleration (friction)
+    // v = v0 - a*t
     const speed = state.ball.velocity.length();
     
     if (speed < CONFIG.stopVelocity) {
@@ -357,301 +302,182 @@ function updateBallPhysics(deltaTime) {
         return;
     }
     
-    // Apply friction (exponential decay)
-    const frictionFactor = Math.exp(-CONFIG.friction * dt * 10);
-    state.ball.velocity.multiplyScalar(frictionFactor);
+    // Friction force opposes velocity
+    const frictionAccel = CONFIG.gravity * CONFIG.friction;
+    const speedDrop = frictionAccel * step;
+    
+    // Update velocity magnitude
+    const newSpeed = Math.max(0, speed - speedDrop);
+    state.ball.velocity.multiplyScalar(newSpeed / speed);
     
     // Update position
-    const dx = state.ball.velocity.x * dt;
-    const dz = state.ball.velocity.y * dt;
+    state.ball.position.x += state.ball.velocity.x * step;
+    state.ball.position.z += state.ball.velocity.y * step;
     
-    state.ball.position.x += dx;
-    state.ball.position.z += dz;
-    
-    // Track distance
-    state.totalDistance += Math.sqrt(dx * dx + dz * dz);
-    
-    // Update ball mesh
+    // Update mesh
     ballMesh.position.copy(state.ball.position);
     
-    // Rotate ball based on movement
-    const rotationSpeed = speed / CONFIG.ballRadius;
-    ballMesh.rotation.x -= dz / CONFIG.ballRadius;
-    ballMesh.rotation.z += dx / CONFIG.ballRadius;
+    // Rotation (visual only)
+    ballMesh.rotation.x -= state.ball.velocity.y * step / CONFIG.ballRadius;
+    ballMesh.rotation.z += state.ball.velocity.x * step / CONFIG.ballRadius;
     
-    // Check for hole
     checkHole();
-    
-    // Check boundaries
-    checkBoundaries();
 }
 
 function checkHole() {
     const holePos = new THREE.Vector2(0, -CONFIG.holeDistance);
     const ballPos = new THREE.Vector2(state.ball.position.x, state.ball.position.z);
     
-    const distance = holePos.distanceTo(ballPos);
-    const speed = state.ball.velocity.length();
+    if (holePos.distanceTo(ballPos) < CONFIG.holeRadius) {
+        // Simple capture logic
+        if (state.ball.velocity.length() < CONFIG.holeCaptureSpeed) {
+            ballInHole();
+        }
+    }
     
-    // Ball is in if:
-    // 1. Center is within hole radius
-    // 2. Speed is below capture threshold
-    if (distance < CONFIG.holeRadius && speed < CONFIG.holeCaptureSpeed) {
-        // Ball falls in!
-        ballInHole();
-    } else if (distance < CONFIG.holeRadius && speed >= CONFIG.holeCaptureSpeed) {
-        // Ball lips out - deflect based on entry point
-        console.log("Lip out! Too fast.");
+    // Reset if too far
+    if (ballPos.length() > CONFIG.greenRadius + 1.0) {
+        stopBall("OFF GREEN");
     }
 }
 
-function checkBoundaries() {
-    const halfWidth = CONFIG.greenWidth / 2 + 0.5;
-    const maxZ = CONFIG.greenLength / 2 + 0.5;
-    const minZ = -CONFIG.greenLength / 2 - 0.5;
+function stopBall(msg) {
+    state.ball.isRolling = false;
     
-    // Stop if off green
-    if (Math.abs(state.ball.position.x) > halfWidth ||
-        state.ball.position.z > maxZ ||
-        state.ball.position.z < minZ) {
-        stopBall();
-        showResult("Off Green", false);
-    }
+    // Calculate final distance to hole
+    const dist = Math.sqrt(
+        state.ball.position.x**2 + 
+        (state.ball.position.z + CONFIG.holeDistance)**2
+    );
+    
+    showResult(msg || (dist < 0.2 ? "GIMME!" : `${dist.toFixed(2)}m LEFT`));
 }
 
 function ballInHole() {
     state.ball.isRolling = false;
-    
-    // Animate ball dropping
-    const dropAnimation = () => {
-        if (state.ball.position.y > -0.02) {
-            state.ball.position.y -= 0.005;
-            ballMesh.position.copy(state.ball.position);
-            requestAnimationFrame(dropAnimation);
-        } else {
-            showResult("In The Hole!", true);
-        }
-    };
-    dropAnimation();
-}
-
-function stopBall() {
-    state.ball.isRolling = false;
-    state.ball.velocity.set(0, 0);
-    
-    // Update distance display
-    updateDistanceDisplay(state.totalDistance);
-    
-    // Check if close to hole
-    const holePos = new THREE.Vector2(0, -CONFIG.holeDistance);
-    const ballPos = new THREE.Vector2(state.ball.position.x, state.ball.position.z);
-    const toHole = holePos.distanceTo(ballPos);
-    
-    if (toHole < 0.3) {
-        showResult(`${(toHole * 100).toFixed(0)}cm short!`, false);
-    }
+    ballMesh.position.y = -0.05; // Drop visual
+    showResult("SUNK IT", "PERFECT SPEED");
 }
 
 function resetBall() {
     state.ball.position.set(0, CONFIG.ballRadius, 0);
     state.ball.velocity.set(0, 0);
     state.ball.isRolling = false;
-    state.totalDistance = 0;
     
     ballMesh.position.copy(state.ball.position);
     ballMesh.rotation.set(0, 0, 0);
     
-    hideResult();
+    document.getElementById('result-overlay').classList.remove('visible');
+    
+    // Clear shot lines
+    const existingShot = scene.getObjectByName('shotRay');
+    if (existingShot) scene.remove(existingShot);
+    
+    // Reset camera
+    resetCamera();
 }
 
 // ============================================================================
-// WebSocket Communication
+// Visual Helpers
 // ============================================================================
 
-function connectWebSocket() {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-        return;
-    }
+function showShotRay(angleRad, speed) {
+    // Remove old
+    const old = scene.getObjectByName('shotRay');
+    if (old) scene.remove(old);
     
-    console.log('Connecting to WebSocket...');
+    // Draw line showing shot direction
+    // Length proportional to speed (approx roll dist)
+    const distEstimate = (speed * speed) / (2 * CONFIG.gravity * CONFIG.friction);
     
-    try {
-        state.ws = new WebSocket(CONFIG.wsUrl);
-        
-        state.ws.onopen = () => {
-            console.log('WebSocket connected');
-            state.connected = true;
-            updateConnectionStatus(true);
-        };
-        
-        state.ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            state.connected = false;
-            updateConnectionStatus(false);
-            
-            // Reconnect after delay
-            setTimeout(connectWebSocket, CONFIG.wsReconnectInterval);
-        };
-        
-        state.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-        
-        state.ws.onmessage = (event) => {
-            handleWebSocketMessage(event.data);
-        };
-        
-    } catch (error) {
-        console.error('WebSocket connection failed:', error);
-        setTimeout(connectWebSocket, CONFIG.wsReconnectInterval);
-    }
+    const endX = Math.sin(angleRad) * distEstimate;
+    const endZ = -Math.cos(angleRad) * distEstimate;
+    
+    const points = [
+        new THREE.Vector3(0, 0.01, 0),
+        new THREE.Vector3(endX, 0.01, endZ)
+    ];
+    
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    const mat = new THREE.LineBasicMaterial({ color: CONFIG.themeColor });
+    const line = new THREE.Line(geo, mat);
+    line.name = 'shotRay';
+    scene.add(line);
 }
 
-function handleWebSocketMessage(data) {
-    try {
-        const message = JSON.parse(data);
-        
-        if (message.type === 'connected') {
-            console.log('Server:', message.message);
-            return;
+function showResult(main, sub = "") {
+    const el = document.getElementById('result-overlay');
+    document.getElementById('result-main').textContent = main;
+    document.getElementById('result-sub').textContent = sub;
+    el.classList.add('visible');
+}
+
+// ============================================================================
+// WebSocket & Events
+// ============================================================================
+
+function setupWebSocket() {
+    // Mock connection for now or real if available
+    state.ws = new WebSocket(CONFIG.wsUrl); // Try local
+    
+    state.ws.onopen = () => {
+        document.querySelector('#connection-status').classList.add('connected');
+    };
+    
+    state.ws.onmessage = (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            if (data.speed_mps) {
+                updateHUD(data);
+                startShot(data.speed_mps, data.direction_deg);
+            }
+        } catch(err) {}
+    };
+}
+
+function updateHUD(data) {
+    document.getElementById('val-speed').textContent = data.speed_mps.toFixed(2);
+    document.getElementById('val-angle').textContent = data.direction_deg.toFixed(1) + "°";
+    
+    // Est distance physics formula: d = v^2 / 2ug
+    const dist = (data.speed_mps ** 2) / (2 * 9.81 * CONFIG.friction);
+    document.getElementById('val-dist').textContent = dist.toFixed(1) + "m";
+}
+
+function setupEvents() {
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    
+    window.addEventListener('keydown', (e) => {
+        switch(e.key.toLowerCase()) {
+            case 'r': resetBall(); break;
+            case 't': 
+                // Test shot
+                const s = 1.5 + Math.random();
+                const d = (Math.random() - 0.5) * 5;
+                updateHUD({speed_mps: s, direction_deg: d});
+                startShot(s, d);
+                break;
+            case 'l':
+                state.showAimLines = !state.showAimLines;
+                aimLineGroup.visible = state.showAimLines;
+                break;
         }
-        
-        // Shot event
-        if (message.speed_mps !== undefined) {
-            console.log('Received shot:', message);
-            state.lastShot = message;
-            
-            // Update stats display
-            updateStatsDisplay(message);
-            
-            // Start the shot animation
-            startShot(message.speed_mps, message.direction_deg);
-        }
-        
-    } catch (error) {
-        console.error('Failed to parse message:', error);
-    }
+    });
 }
-
-// ============================================================================
-// UI Updates
-// ============================================================================
-
-function updateConnectionStatus(connected) {
-    const statusEl = document.getElementById('connection-status');
-    const textEl = statusEl.querySelector('.text');
-    
-    if (connected) {
-        statusEl.classList.remove('disconnected');
-        statusEl.classList.add('connected');
-        textEl.textContent = 'Connected';
-    } else {
-        statusEl.classList.remove('connected');
-        statusEl.classList.add('disconnected');
-        textEl.textContent = 'Disconnected';
-    }
-}
-
-function updateStatsDisplay(shot) {
-    document.getElementById('stat-speed').textContent = shot.speed_mps.toFixed(2);
-    document.getElementById('stat-direction').textContent = 
-        (shot.direction_deg >= 0 ? '+' : '') + shot.direction_deg.toFixed(1);
-    document.getElementById('stat-confidence').textContent = 
-        Math.round(shot.confidence * 100);
-}
-
-function updateDistanceDisplay(distance) {
-    document.getElementById('stat-distance').textContent = distance.toFixed(2);
-}
-
-function showResult(text, isSuccess) {
-    const resultEl = document.getElementById('result-message');
-    const textEl = resultEl.querySelector('.text');
-    
-    resultEl.classList.remove('hidden', 'success', 'miss');
-    resultEl.classList.add(isSuccess ? 'success' : 'miss');
-    textEl.textContent = text;
-    
-    // Auto-hide after delay
-    setTimeout(() => {
-        resultEl.classList.add('hidden');
-    }, 3000);
-}
-
-function hideResult() {
-    document.getElementById('result-message').classList.add('hidden');
-}
-
-// ============================================================================
-// Event Handlers
-// ============================================================================
-
-function onWindowResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-}
-
-function onKeyDown(event) {
-    switch (event.key.toLowerCase()) {
-        case 'r':
-            resetBall();
-            break;
-        case 't':
-            // Test shot
-            const testSpeed = 1.5 + Math.random() * 1.0;
-            const testDirection = (Math.random() - 0.5) * 10;
-            
-            const testShot = {
-                speed_mps: testSpeed,
-                direction_deg: testDirection,
-                confidence: 0.9,
-            };
-            updateStatsDisplay(testShot);
-            startShot(testSpeed, testDirection);
-            break;
-    }
-}
-
-// ============================================================================
-// Animation Loop
-// ============================================================================
 
 function animate() {
     requestAnimationFrame(animate);
     
-    const deltaTime = state.clock.getDelta();
+    const dt = state.clock.getDelta();
+    updatePhysics(dt);
     
-    // Update physics
-    updateBallPhysics(deltaTime);
-    
-    // Animate flag waving
-    if (flagMesh) {
-        flagMesh.rotation.y = Math.sin(Date.now() * 0.003) * 0.1;
-    }
-    
-    // Update controls
     controls.update();
-    
-    // Render
     renderer.render(scene, camera);
 }
 
-// ============================================================================
-// Initialization
-// ============================================================================
-
-function init() {
-    console.log('Putting Launch Monitor - 3D Simulator');
-    console.log('Initializing...');
-    
-    initScene();
-    connectWebSocket();
-    animate();
-    
-    console.log('Ready!');
-    console.log('Press T for test shot, R to reset ball');
-}
-
-// Start application
+// Start
 init();

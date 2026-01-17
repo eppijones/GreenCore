@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Putting Launch Monitor - 3D Simulator</title>
+    <title>Pro Putt Sim</title>
     <link rel="stylesheet" href="style.css">
     <script type="importmap">
         {
@@ -15,59 +15,46 @@
     </script>
 </head>
 <body>
-    <div id="app">
-        <!-- 3D Canvas Container -->
-        <div id="canvas-container"></div>
-        
-        <!-- Overlay UI -->
-        <div id="overlay">
-            <!-- Connection Status -->
-            <div id="connection-status" class="status disconnected">
-                <span class="indicator"></span>
-                <span class="text">Disconnected</span>
+    <div id="loading">INITIALIZING SYSTEM...</div>
+
+    <div id="canvas-container"></div>
+
+    <div id="overlay">
+        <!-- Minimal Status -->
+        <div id="connection-status">
+            <div class="status-dot"></div>
+        </div>
+
+        <!-- HUD Stats -->
+        <div class="header-stats">
+            <div class="stat-item">
+                <span class="stat-label">Speed</span>
+                <span class="stat-value" id="val-speed">0.00</span>
             </div>
-            
-            <!-- Shot Stats -->
-            <div id="shot-stats" class="panel">
-                <h2>Last Shot</h2>
-                <div class="stat">
-                    <span class="label">Speed</span>
-                    <span class="value" id="stat-speed">--</span>
-                    <span class="unit">m/s</span>
-                </div>
-                <div class="stat">
-                    <span class="label">Direction</span>
-                    <span class="value" id="stat-direction">--</span>
-                    <span class="unit">°</span>
-                </div>
-                <div class="stat">
-                    <span class="label">Distance</span>
-                    <span class="value" id="stat-distance">--</span>
-                    <span class="unit">m</span>
-                </div>
-                <div class="stat">
-                    <span class="label">Confidence</span>
-                    <span class="value" id="stat-confidence">--</span>
-                    <span class="unit">%</span>
-                </div>
+            <div class="stat-item">
+                <span class="stat-label">Angle</span>
+                <span class="stat-value" id="val-angle">0.0°</span>
             </div>
-            
-            <!-- Result Message -->
-            <div id="result-message" class="hidden">
-                <span class="text"></span>
-            </div>
-            
-            <!-- Instructions -->
-            <div id="instructions" class="panel">
-                <h3>Controls</h3>
-                <p>Mouse: Rotate view</p>
-                <p>Scroll: Zoom</p>
-                <p>R: Reset ball</p>
-                <p>T: Test shot</p>
+            <div class="stat-item">
+                <span class="stat-label">Dist</span>
+                <span class="stat-value" id="val-dist">0.0m</span>
             </div>
         </div>
+
+        <!-- Result Popup -->
+        <div id="result-overlay">
+            <div class="result-text" id="result-main"></div>
+            <div class="result-sub" id="result-sub"></div>
+        </div>
+
+        <!-- Instructions -->
+        <div id="controls-hint">
+            <span><span class="key">R</span>RESET</span>
+            <span><span class="key">T</span>TEST SHOT</span>
+            <span><span class="key">L</span>AIM LINES</span>
+        </div>
     </div>
-    
+
     <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -147,9 +147,15 @@ class Calibration:
             self.data = CalibrationData.from_dict(data)
             print(f"[Calibration] Loaded from {load_path}")
             self._compute_forward_angle()
+            if self.data.target_line_p1 and self.data.target_line_p2:
+                print(f"[Calibration] Using custom target line, angle: {math.degrees(self.data.forward_angle_rad):.1f}°")
+            else:
+                print(f"[Calibration] Using default direction: RIGHT (0°)")
             return True
         except FileNotFoundError:
-            print(f"[Calibration] No config file found at {load_path}")
+            print(f"[Calibration] No config file found at {load_path}, using defaults")
+            self._compute_forward_angle()  # Ensure default forward angle is set
+            print(f"[Calibration] Using default direction: RIGHT (0°)")
             return False
         except Exception as e:
             print(f"[Calibration] Failed to load: {e}")
@@ -318,6 +324,10 @@ class Calibration:
             dx = self.data.target_line_p2[0] - self.data.target_line_p1[0]
             dy = self.data.target_line_p2[1] - self.data.target_line_p1[1]
             self.data.forward_angle_rad = math.atan2(dy, dx)
+        else:
+            # Default: forward is RIGHT in the camera frame (positive X)
+            # This assumes putting left-to-right on camera
+            self.data.forward_angle_rad = 0.0
     
     def calibrate_ground(self, depth_frames: List[np.ndarray], depth_scale: float = 0.001):
         """
@@ -380,7 +390,7 @@ class Calibration:
             x, y, w, h = self.data.roi
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
         
-        # Draw target line
+        # Draw target line or default direction indicator
         if self.data.target_line_p1 and self.data.target_line_p2:
             p1 = self.data.target_line_p1
             p2 = self.data.target_line_p2
@@ -399,6 +409,15 @@ class Calibration:
                 mid = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
                 end = (int(mid[0] + dx * arrow_len), int(mid[1] + dy * arrow_len))
                 cv2.arrowedLine(frame, mid, end, (0, 255, 255), 2)
+        else:
+            # Draw default "forward is RIGHT" indicator
+            h, w = frame.shape[:2]
+            # Draw arrow in bottom-left corner showing direction
+            arrow_start = (40, h - 40)
+            arrow_end = (100, h - 40)
+            cv2.arrowedLine(frame, arrow_start, arrow_end, (0, 255, 255), 2, tipLength=0.3)
+            cv2.putText(frame, "TARGET", (35, h - 50),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
         
         # Draw current calibration mode
         if self.mode != CalibrationMode.NONE:
@@ -478,11 +497,14 @@ class Calibration:
     
     @property
     def is_calibrated(self) -> bool:
-        """Check if all required calibrations are complete."""
+        """
+        Check if basic calibrations are complete.
+        
+        ROI and target line are now optional:
+        - ROI defaults to full frame
+        - Target direction defaults to RIGHT
+        """
         return (
-            self.data.roi is not None and
-            self.data.target_line_p1 is not None and
-            self.data.target_line_p2 is not None and
             self.data.pixels_per_meter > 0 and
             self.data.ground_depth > 0
         )
@@ -491,7 +513,7 @@ class Calibration:
     def status_text(self) -> str:
         """Get calibration status as text."""
         status = []
-        status.append(f"ROI: {'OK' if self.data.roi else 'NO'}")
-        status.append(f"Target: {'OK' if self.data.target_line_p1 else 'NO'}")
+        status.append(f"ROI: {'OK' if self.data.roi else 'Full'}")
+        status.append(f"Target: {'Custom' if self.data.target_line_p1 else 'Right'}")
         status.append(f"Scale: {self.data.pixels_per_meter:.0f} px/m")
         return " | ".join(status)
