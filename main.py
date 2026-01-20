@@ -3,19 +3,22 @@
 Putting Launch Monitor MVP - Main Entry Point
 
 Real-time golf ball tracking and 3D visualization system.
-Supports ZED 2i (high-speed), Intel RealSense D455, or standard USB webcams.
+Supports ZED 2i (high-speed), Intel RealSense D455, Arducam OV9281, or standard USB webcams.
 
 Camera Priority:
-    1. ZED 2i @ 100 FPS (lowest latency)
-    2. Intel RealSense D455
-    3. Standard USB webcam
+    1. Arducam OV9281 @ 120 FPS (global shutter, lowest latency)
+    2. ZED 2i @ 100 FPS
+    3. Intel RealSense D455
+    4. Standard USB webcam
 
 Usage:
     python main.py              # Auto-detect best camera
+    python main.py --arducam    # Force Arducam OV9281 mode (120fps)
     python main.py --zed        # Force ZED 2i mode
     python main.py --webcam     # Force webcam mode
     python main.py --realsense  # Force RealSense mode
     python main.py --demo       # Demo mode (no camera)
+    python main.py --validate   # Run 120fps validation test
 
 Keyboard Controls:
     r - Start ROI calibration (draw rectangle)
@@ -24,11 +27,12 @@ Keyboard Controls:
     g - Calibrate ground plane depth
     e - Toggle auto/manual exposure
     +/- - Adjust exposure (manual mode)
+    v - Run 5-second 120fps validation
     ESC - Cancel calibration
     q - Quit
 
 Requirements:
-    - ZED 2i OR USB Webcam OR Intel RealSense D455
+    - ZED 2i OR USB Webcam OR Intel RealSense D455 OR Arducam OV9281
     - Python 3.11+ (recommended)
     - See requirements.txt for dependencies
 """
@@ -59,6 +63,12 @@ from cv.webcam_camera import CameraError as WebcamCameraError
 from cv.zed_camera import ZedCamera, ZedConfig, ZedMode
 from cv.zed_camera import CameraError as ZedCameraError
 
+# Arducam OV9281 imports - NEW 120fps validated module
+from cv.arducam_120fps import Arducam120FPS, CaptureConfig, CaptureError, FPSMetrics, CapturedFrame
+# Keep old import for fallback
+from cv.arducam_camera import ArducamCamera, ArducamConfig
+from cv.arducam_camera import CameraError as ArducamCameraError
+
 # Try to import RealSense (optional)
 try:
     from cv.realsense_camera import RealsenseCamera, CameraError as RealSenseCameraError, CameraConfig, ExposureMode
@@ -76,6 +86,8 @@ from cv.auto_ball_tracker import AutoBallTracker, AutoTrackerConfig, TrackerStat
 
 class CameraMode:
     """Camera mode enum."""
+    ARDUCAM_120 = "arducam_120"  # New validated 120fps module
+    ARDUCAM = "arducam"  # Legacy arducam module
     ZED = "zed"
     WEBCAM = "webcam"
     REALSENSE = "realsense"
@@ -88,6 +100,11 @@ class PuttingMonitor:
     
     Orchestrates camera capture, CV processing, and server communication.
     Optimized for low-latency operation with high-FPS cameras.
+    
+    NEW: Displays three separate FPS metrics:
+    - CAP: Capture FPS (frames delivered by camera)
+    - PROC: Processing FPS (frames actually processed by tracking)
+    - DISP: Display FPS (UI render rate)
     """
     
     def __init__(
@@ -96,8 +113,9 @@ class PuttingMonitor:
         http_port: int = 8080,
         ws_port: int = 8765,
         open_browser: bool = True,
-        camera_mode: str = CameraMode.ZED,
-        camera_index: int = -1  # -1 = auto-detect
+        camera_mode: str = CameraMode.ARDUCAM_120,
+        camera_index: int = -1,  # -1 = auto-detect
+        run_validation: bool = False
     ):
         """
         Initialize the putting monitor.
@@ -107,8 +125,9 @@ class PuttingMonitor:
             http_port: Port for HTTP server.
             ws_port: Port for WebSocket server.
             open_browser: Whether to open browser automatically.
-            camera_mode: Camera mode (zed, webcam, realsense, demo).
+            camera_mode: Camera mode (arducam_120, zed, webcam, realsense, demo).
             camera_index: Camera device index (-1 for auto-detect).
+            run_validation: If True, run 120fps validation test on startup.
         """
         self.config_path = config_path
         self.http_port = http_port
@@ -116,17 +135,29 @@ class PuttingMonitor:
         self.open_browser = open_browser
         self.camera_mode = camera_mode
         self.camera_index = camera_index
+        self.run_validation = run_validation
         
         # Load config file
         self.app_config = self._load_config()
         
         # Components
-        self.camera: Optional[Union[ZedCamera, WebcamCamera, 'RealsenseCamera']] = None
+        self.camera: Optional[Union[Arducam120FPS, ArducamCamera, ZedCamera, WebcamCamera, 'RealsenseCamera']] = None
         self.calibration: Optional[Calibration] = None
-        self.tracker: Optional[ColorBallTracker] = None
+        self.tracker: Optional[AutoBallTracker] = None
         self.shot_detector: Optional[ShotDetector] = None
         self.web_server: Optional[WebServer] = None
         self.ws_server: Optional[WebSocketServer] = None
+        
+        # FPS metrics (NEW: separate tracking)
+        self._fps_metrics = FPSMetrics()
+        self._last_display_time = time.perf_counter()
+        self._display_frame_count = 0
+        self._display_fps_history = []
+        
+        # Processing FPS tracking
+        self._last_process_time = time.perf_counter()
+        self._process_frame_count = 0
+        self._process_fps_history = []
         
         # State
         self._running = False
@@ -153,9 +184,9 @@ class PuttingMonitor:
         # Return default config
         return {
             "camera": {
-                "primary": "zed2i",
-                "mode": "webcam",
-                "fps": 100,
+                "primary": "arducam_120",
+                "mode": "arducam_120",
+                "fps": 120,
                 "fallback_to_realsense": True
             },
             "shot_detection": {
@@ -200,6 +231,14 @@ class PuttingMonitor:
             else:
                 print("[Main] Running in DEMO MODE - press 't' to trigger test shots")
             
+            # Run 120fps validation if requested
+            if self.run_validation and isinstance(self.camera, Arducam120FPS):
+                print("\n[Main] Running 120fps validation test...")
+                report = self.camera.run_validation(duration_seconds=5.0)
+                report.print_report()
+                if report.result.value == "FAIL":
+                    print("[Main] WARNING: 120fps validation failed! Check report above.")
+            
             # Initialize tracker and detector
             print("[Main] Initializing auto tracker and detector...")
             tracker_config = AutoTrackerConfig(
@@ -219,6 +258,11 @@ class PuttingMonitor:
             # Apply config file settings to shot detector
             if 'shot_detection' in self.app_config:
                 self.shot_detector.update_config_from_dict(self.app_config['shot_detection'])
+            
+            # Set up 120fps processing callback for Arducam
+            if isinstance(self.camera, Arducam120FPS):
+                print("[Main] Setting up 120fps processing callback...")
+                self.camera.set_processing_callback(self._process_frame_120fps)
             
             # Open browser
             if self.open_browser:
@@ -250,7 +294,52 @@ class PuttingMonitor:
     def _init_camera(self):
         """Initialize camera based on mode with fallback support."""
         
-        # Try ZED first if requested
+        # Try new Arducam 120fps module first (primary)
+        if self.camera_mode == CameraMode.ARDUCAM_120:
+            if self._try_init_arducam_120():
+                return
+            
+            # Fallback to legacy Arducam module
+            print("[Main] New 120fps module failed, trying legacy Arducam...")
+            if self._try_init_arducam():
+                return
+            
+            # Fallback to ZED
+            print("[Main] Arducam not available, trying ZED...")
+            if self._try_init_zed():
+                return
+            
+            # Fallback to webcam
+            print("[Main] Trying webcam fallback...")
+            if self._try_init_webcam():
+                return
+            
+            # All failed, go to demo mode
+            print("[Main] No cameras available, switching to DEMO MODE")
+            self.camera_mode = CameraMode.DEMO
+            return
+        
+        # Try legacy Arducam if requested
+        if self.camera_mode == CameraMode.ARDUCAM:
+            if self._try_init_arducam():
+                return
+            
+            # Fallback to ZED
+            print("[Main] Arducam not available, trying ZED...")
+            if self._try_init_zed():
+                return
+            
+            # Fallback to webcam
+            print("[Main] Trying webcam fallback...")
+            if self._try_init_webcam():
+                return
+            
+            # All failed, go to demo mode
+            print("[Main] No cameras available, switching to DEMO MODE")
+            self.camera_mode = CameraMode.DEMO
+            return
+        
+        # Try ZED if requested
         if self.camera_mode == CameraMode.ZED:
             if self._try_init_zed():
                 return
@@ -292,6 +381,78 @@ class PuttingMonitor:
             print("[Main] Webcam not available, switching to DEMO MODE")
             self.camera_mode = CameraMode.DEMO
             return
+    
+    def _try_init_arducam_120(self) -> bool:
+        """Try to initialize new Arducam 120fps validated module."""
+        try:
+            print("[Main] Initializing Arducam OV9281 @ 120fps (validated module)...")
+            
+            cam_config = self.app_config.get('camera', {})
+            
+            config = CaptureConfig(
+                width=cam_config.get('arducam_width', 1280),
+                height=cam_config.get('arducam_height', 800),
+                target_fps=cam_config.get('arducam_fps', 120),
+                device_index=self.camera_index,
+            )
+            
+            self.camera = Arducam120FPS(config)
+            self.camera.start()
+            
+            self.camera_mode = CameraMode.ARDUCAM_120
+            print(f"[Main] ✓ Arducam 120fps module initialized!")
+            print(f"[Main] ✓ Global shutter active - no motion blur!")
+            return True
+            
+        except CaptureError as e:
+            print(f"[Main] Arducam 120fps initialization failed: {e}")
+            self.camera = None
+            return False
+        except Exception as e:
+            print(f"[Main] Arducam 120fps initialization error: {e}")
+            self.camera = None
+            return False
+    
+    def _try_init_arducam(self) -> bool:
+        """Try to initialize legacy Arducam module."""
+        try:
+            print("[Main] Initializing Arducam OV9281 (legacy module)...")
+            
+            cam_config = self.app_config.get('camera', {})
+            
+            # Auto-detect Arducam
+            if self.camera_index >= 0:
+                arducam_index = self.camera_index
+            else:
+                arducam_index = ArducamCamera.find_arducam()
+                if arducam_index is None:
+                    print("[Main] No monochrome camera found!")
+                    return False
+            
+            config = ArducamConfig(
+                width=cam_config.get('arducam_width', 1280),
+                height=cam_config.get('arducam_height', 800),
+                fps=cam_config.get('arducam_fps', 120),
+                device_index=arducam_index,
+                auto_exposure=cam_config.get('auto_exposure', False),
+                exposure=cam_config.get('exposure', 50)
+            )
+            
+            self.camera = ArducamCamera(config)
+            self.camera.start()
+            
+            self.camera_mode = CameraMode.ARDUCAM
+            print(f"[Main] Arducam (legacy) initialized at {config.fps} FPS target")
+            return True
+            
+        except ArducamCameraError as e:
+            print(f"[Main] Arducam initialization failed: {e}")
+            self.camera = None
+            return False
+        except Exception as e:
+            print(f"[Main] Arducam initialization error: {e}")
+            self.camera = None
+            return False
     
     def _try_init_zed(self) -> bool:
         """Try to initialize ZED camera."""
@@ -366,6 +527,41 @@ class PuttingMonitor:
             self.camera = None
             return False
     
+    def _process_frame_120fps(self, captured_frame: CapturedFrame):
+        """
+        Processing callback for 120fps tracking.
+        
+        This runs in a dedicated thread at 120fps, decoupled from display.
+        
+        Args:
+            captured_frame: Frame from capture thread
+            
+        Returns:
+            tracking_result for storage
+        """
+        if not self.tracker:
+            return None
+        
+        try:
+            # Run tracking at 120fps
+            tracking_result = self.tracker.update(
+                captured_frame.frame,
+                captured_frame.gray,
+                captured_frame.arrival_time,
+                captured_frame.frame_number
+            )
+            
+            # Update shot detector at 120fps
+            if self.shot_detector:
+                self.shot_detector.update(tracking_result)
+            
+            return tracking_result
+            
+        except Exception as e:
+            # Don't crash the processing thread on errors
+            print(f"[Main] 120fps processing error: {e}")
+            return None
+    
     def stop(self):
         """Stop all components."""
         print("\n[Main] Shutting down...")
@@ -387,9 +583,10 @@ class PuttingMonitor:
         """Main processing loop."""
         while self._running:
             start_time = time.time()
+            process_start = time.perf_counter()
             
             # Get frame based on camera mode
-            if self.camera_mode == CameraMode.ZED and self.camera:
+            if self.camera_mode == CameraMode.ARDUCAM_120 and self.camera:
                 frame_data = self.camera.get_frames(timeout_ms=100)
                 
                 if frame_data is None:
@@ -399,6 +596,37 @@ class PuttingMonitor:
                 gray_frame = frame_data.gray_frame
                 timestamp = frame_data.timestamp
                 frame_number = frame_data.frame_number
+                
+                # Get metrics from new module
+                self._fps_metrics = self.camera.get_metrics()
+                
+            elif self.camera_mode == CameraMode.ARDUCAM and self.camera:
+                frame_data = self.camera.get_frames(timeout_ms=100)
+                
+                if frame_data is None:
+                    continue
+                
+                color_frame = frame_data.color_frame
+                gray_frame = frame_data.gray_frame
+                timestamp = frame_data.timestamp
+                frame_number = frame_data.frame_number
+                
+                # Legacy: use camera's FPS as capture FPS
+                self._fps_metrics.capture_fps = self.camera.fps
+                
+            elif self.camera_mode == CameraMode.ZED and self.camera:
+                frame_data = self.camera.get_frames(timeout_ms=100)
+                
+                if frame_data is None:
+                    continue
+                
+                color_frame = frame_data.color_frame
+                gray_frame = frame_data.gray_frame
+                timestamp = frame_data.timestamp
+                frame_number = frame_data.frame_number
+                
+                # Legacy: use camera's FPS
+                self._fps_metrics.capture_fps = self.camera.fps
                 
             elif self.camera_mode == CameraMode.WEBCAM and self.camera:
                 frame_data = self.camera.get_frames(timeout_ms=100)
@@ -410,6 +638,9 @@ class PuttingMonitor:
                 gray_frame = frame_data.gray_frame
                 timestamp = frame_data.timestamp
                 frame_number = frame_data.frame_number
+                
+                # Legacy: use camera's FPS
+                self._fps_metrics.capture_fps = self.camera.fps
                 
             elif self.camera_mode == CameraMode.REALSENSE and self.camera:
                 frame_data = self.camera.get_frames(timeout_ms=100)
@@ -424,6 +655,10 @@ class PuttingMonitor:
                 timestamp = frame_data.timestamp
                 frame_number = frame_data.frame_number
                 
+                # Legacy: use camera's FPS
+                if hasattr(self.camera, 'fps'):
+                    self._fps_metrics.capture_fps = self.camera.fps
+                
             else:
                 # Demo mode - generate synthetic frame
                 color_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -434,8 +669,18 @@ class PuttingMonitor:
             
             self._frame_count += 1
             
-            # Process tracking (if not in demo mode)
-            if self.camera_mode != CameraMode.DEMO and self.tracker:
+            # Track processing FPS (for non-120fps modes)
+            self._process_frame_count += 1
+            self._update_process_fps()
+            
+            # Process tracking based on camera mode
+            if self.camera_mode == CameraMode.ARDUCAM_120 and self.camera:
+                # Tracking runs at 120fps in processing thread
+                # Just get the latest result for display
+                tracking_result = self.camera.get_latest_tracking_result()
+                # Shot detector is updated in the processing callback
+            elif self.camera_mode != CameraMode.DEMO and self.tracker:
+                # Non-120fps modes: run tracking in display loop (limited by display rate)
                 tracking_result = self.tracker.update(
                     color_frame,
                     gray_frame,
@@ -445,20 +690,55 @@ class PuttingMonitor:
                 
                 # Update shot detector
                 self.shot_detector.update(tracking_result)
+            else:
+                tracking_result = None
             
             # Create display frame
             display_frame = self._create_display_frame(color_frame, gray_frame)
             
-            # Show frame
+            # Show frame and update display FPS
             cv2.imshow(self.window_name, display_frame)
+            self._update_display_fps()
+            
+            # Mark display tick for new camera module
+            if isinstance(self.camera, Arducam120FPS):
+                self.camera.mark_display_tick()
             
             # Handle keyboard
             key = cv2.waitKey(1) & 0xFF
             if not self._handle_key(key):
                 break
+    
+    def _update_process_fps(self):
+        """Update processing FPS calculation."""
+        current_time = time.perf_counter()
+        elapsed = current_time - self._last_process_time
+        
+        if elapsed >= 0.5:  # Update every 0.5 seconds
+            fps = self._process_frame_count / elapsed
+            self._process_fps_history.append(fps)
+            if len(self._process_fps_history) > 10:
+                self._process_fps_history.pop(0)
             
-            # Update FPS
-            self._update_fps()
+            self._fps_metrics.process_fps = sum(self._process_fps_history) / len(self._process_fps_history)
+            self._process_frame_count = 0
+            self._last_process_time = current_time
+    
+    def _update_display_fps(self):
+        """Update display FPS calculation."""
+        current_time = time.perf_counter()
+        self._display_frame_count += 1
+        elapsed = current_time - self._last_display_time
+        
+        if elapsed >= 0.5:  # Update every 0.5 seconds
+            fps = self._display_frame_count / elapsed
+            self._display_fps_history.append(fps)
+            if len(self._display_fps_history) > 10:
+                self._display_fps_history.pop(0)
+            
+            self._fps_metrics.display_fps = sum(self._display_fps_history) / len(self._display_fps_history)
+            self._display_frame_count = 0
+            self._last_display_time = current_time
     
     def _create_display_frame(
         self, 
@@ -506,85 +786,113 @@ class PuttingMonitor:
                     cv2.putText(display, speed_text, (cx + 20, cy),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
-        # Draw status bar
+        # Draw status bar with CAP/PROC/DISP FPS
         self._draw_status_bar(display)
         
         return display
     
     def _draw_status_bar(self, frame: np.ndarray):
-        """Draw status bar at bottom of frame."""
+        """Draw status bar at bottom of frame with CAP/PROC/DISP metrics."""
         h, w = frame.shape[:2]
-        bar_height = 50
+        bar_height = 60
         
         # Semi-transparent background
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, h - bar_height), (w, h), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
         
-        y = h - 15
+        y = h - 35
+        y2 = h - 12
         
-        # FPS and camera info
-        camera_fps = 0
-        if self.camera and hasattr(self.camera, 'fps'):
-            camera_fps = self.camera.fps
+        # ===== TOP ROW: FPS METRICS =====
+        # CAP FPS (from camera capture)
+        cap_fps = self._fps_metrics.capture_fps
+        cap_color = (0, 255, 0) if cap_fps >= 100 else (0, 255, 255) if cap_fps >= 60 else (0, 100, 255)
+        cv2.putText(frame, f"CAP:{cap_fps:5.1f}", (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, cap_color, 1)
         
-        fps_text = f"FPS: {camera_fps:.1f}"
-        cv2.putText(frame, fps_text, (10, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        # PROC FPS (frames processed by tracking)
+        proc_fps = self._fps_metrics.process_fps
+        proc_color = (0, 255, 0) if proc_fps >= 100 else (0, 255, 255) if proc_fps >= 60 else (0, 100, 255)
+        cv2.putText(frame, f"PROC:{proc_fps:5.1f}", (120, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, proc_color, 1)
+        
+        # DISP FPS (UI render rate)
+        disp_fps = self._fps_metrics.display_fps
+        disp_color = (0, 255, 0) if disp_fps >= 30 else (0, 255, 255) if disp_fps >= 20 else (0, 100, 255)
+        cv2.putText(frame, f"DISP:{disp_fps:5.1f}", (245, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, disp_color, 1)
+        
+        # Drops and PTS anomalies (for new module)
+        if isinstance(self.camera, Arducam120FPS):
+            drops = self._fps_metrics.dropped_frames
+            anomalies = self._fps_metrics.pts_anomalies
+            drop_color = (100, 100, 255) if drops > 10 else (255, 255, 255)
+            cv2.putText(frame, f"Drops:{drops:4d}  PTS:{anomalies:3d}", (360, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.55, drop_color, 1)
         
         # Camera mode with color coding
         mode_colors = {
-            CameraMode.ZED: (0, 255, 255),      # Yellow - high speed
-            CameraMode.REALSENSE: (255, 200, 0), # Cyan
-            CameraMode.WEBCAM: (100, 255, 100),  # Green
-            CameraMode.DEMO: (100, 100, 255),    # Red
+            CameraMode.ARDUCAM_120: (255, 165, 0),  # Orange - 120fps validated
+            CameraMode.ARDUCAM: (200, 130, 0),      # Darker orange - legacy
+            CameraMode.ZED: (0, 255, 255),          # Yellow - high speed
+            CameraMode.REALSENSE: (255, 200, 0),    # Cyan
+            CameraMode.WEBCAM: (100, 255, 100),     # Green
+            CameraMode.DEMO: (100, 100, 255),       # Red
         }
         mode_color = mode_colors.get(self.camera_mode, (255, 255, 255))
         
         mode_labels = {
+            CameraMode.ARDUCAM_120: "Arducam 120fps",
+            CameraMode.ARDUCAM: "Arducam (legacy)",
             CameraMode.ZED: "ZED 100fps",
             CameraMode.REALSENSE: "RealSense",
             CameraMode.WEBCAM: "Webcam",
             CameraMode.DEMO: "DEMO",
         }
-        mode_text = f"Mode: {mode_labels.get(self.camera_mode, self.camera_mode)}"
-        cv2.putText(frame, mode_text, (120, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_color, 1)
+        mode_text = mode_labels.get(self.camera_mode, self.camera_mode)
+        cv2.putText(frame, mode_text, (550, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, mode_color, 1)
         
-        # Calibration status
-        cal_text = self.calibration.status_text
-        cv2.putText(frame, cal_text, (320, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        
-        # Tracking status (auto-tracker state)
+        # ===== BOTTOM ROW: STATUS =====
+        # Tracking status
         if self.tracker:
             state = self.tracker.state
             if state == TrackerState.TRACKING or state == TrackerState.SHOT_DETECTED:
                 track_text = "TRACKING"
                 track_color = (0, 255, 0)
             elif state == TrackerState.SEARCHING:
-                track_text = "Auto-searching..."
+                track_text = "Searching..."
                 track_color = (0, 255, 255)
             elif state == TrackerState.WAITING:
-                track_text = "Waiting for sim"
+                track_text = "Waiting"
                 track_color = (0, 165, 255)
             else:
                 track_text = state.value.upper()
                 track_color = (100, 100, 255)
-            cv2.putText(frame, track_text, (550, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, track_color, 1)
+            cv2.putText(frame, track_text, (10, y2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, track_color, 1)
         
-        # Shot detector status with latency info
+        # Shot detector status
         if self.shot_detector:
             shot_text = f"Shot: {self.shot_detector.status_text}"
-            cv2.putText(frame, shot_text, (750, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 255, 100), 1)
+            cv2.putText(frame, shot_text, (130, y2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 1)
+        
+        # Calibration status
+        cal_text = self.calibration.status_text
+        cv2.putText(frame, cal_text, (350, y2),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
         
         # WebSocket clients
         if self.ws_server:
             ws_text = f"Clients: {self.ws_server.client_count}"
-            cv2.putText(frame, ws_text, (w - 120, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 200, 255), 1)
+            cv2.putText(frame, ws_text, (w - 100, y2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 255), 1)
+        
+        # Hotkey hint
+        cv2.putText(frame, "v=validate", (w - 100, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
     
     def _handle_key(self, key: int) -> bool:
         """
@@ -644,6 +952,15 @@ class PuttingMonitor:
             # Test shot (works in demo mode too)
             self._trigger_test_shot()
         
+        elif key == ord('v'):
+            # Run 120fps validation
+            if isinstance(self.camera, Arducam120FPS):
+                print("\n[Main] Running 5-second validation test...")
+                report = self.camera.run_validation(duration_seconds=5.0)
+                report.print_report()
+            else:
+                print("[Main] Validation only available with Arducam 120fps module")
+        
         return True
     
     def _mouse_callback(self, event: int, x: int, y: int, flags: int, param):
@@ -683,7 +1000,7 @@ class PuttingMonitor:
             start_position=(0.0, 0.0),
             frame_count=8,
             trajectory_length_m=0.1,
-            camera_fps=100.0,
+            camera_fps=self._fps_metrics.capture_fps,
             latency_estimate_ms=90.0,
         )
         
@@ -698,16 +1015,6 @@ class PuttingMonitor:
         if self.ws_server:
             self.ws_server.broadcast(test_shot.to_dict())
     
-    def _update_fps(self):
-        """Update FPS calculation."""
-        current_time = time.time()
-        elapsed = current_time - self._last_fps_time
-        
-        if elapsed >= 1.0:
-            self._fps = self._frame_count / elapsed
-            self._frame_count = 0
-            self._last_fps_time = current_time
-    
     def _print_instructions(self):
         """Print keyboard instructions."""
         print("\n" + "-"*60)
@@ -718,11 +1025,20 @@ class PuttingMonitor:
         print("  3. Putt the ball - shot is detected!")
         print("  4. System waits for virtual ball, then resumes")
         print("")
+        print("FPS DISPLAY LEGEND")
+        print("-"*60)
+        print("  CAP:   Camera capture rate (should be ~120)")
+        print("  PROC:  Tracking processing rate")
+        print("  DISP:  UI display refresh rate")
+        print("  Drops: Frames dropped (capture→process)")
+        print("  PTS:   Timestamp anomalies (should be ~0)")
+        print("")
         print("KEYBOARD CONTROLS")
         print("-"*60)
         print("  CLICK - Manual ball select (if auto-detect fails)")
         print("  x     - Reset tracker")
         print("  t     - Trigger test shot")
+        print("  v     - Run 5-second 120fps validation")
         print("  r     - Calibrate ROI (optional)")
         print("  c     - Calibrate target line (optional)")  
         print("  s     - Calibrate scale (optional)")
@@ -732,7 +1048,16 @@ class PuttingMonitor:
         print("-"*60)
         
         # Show latency expectations
-        if self.camera_mode == CameraMode.ZED:
+        if self.camera_mode == CameraMode.ARDUCAM_120:
+            print("\n📊 PERFORMANCE (Arducam OV9281 @ 120 FPS - VALIDATED)")
+            print("   Global shutter - no motion blur!")
+            print("   Expected latency: ~60-80ms (ultra-responsive)")
+            print("   Press 'v' to run 120fps validation test")
+        elif self.camera_mode == CameraMode.ARDUCAM:
+            print("\n📊 PERFORMANCE (Arducam OV9281 - legacy module)")
+            print("   Global shutter - no motion blur!")
+            print("   Expected latency: ~70-90ms")
+        elif self.camera_mode == CameraMode.ZED:
             print("\n📊 PERFORMANCE (ZED 2i @ 100 FPS)")
             print("   Expected latency: ~80-100ms (feels real-time)")
         elif self.camera_mode == CameraMode.WEBCAM:
@@ -775,9 +1100,19 @@ def main():
         help="Don't open browser automatically"
     )
     parser.add_argument(
+        "--arducam",
+        action="store_true",
+        help="Force Arducam OV9281 mode with 120fps validated module (PRIMARY)"
+    )
+    parser.add_argument(
+        "--arducam-legacy",
+        action="store_true",
+        help="Force Arducam OV9281 mode with legacy module"
+    )
+    parser.add_argument(
         "--zed",
         action="store_true",
-        help="Force ZED 2i mode (100 FPS, lowest latency)"
+        help="Force ZED 2i mode (100 FPS)"
     )
     parser.add_argument(
         "--webcam",
@@ -800,12 +1135,21 @@ def main():
         default=-1,
         help="Camera device index (-1 for auto-detect)"
     )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Run 120fps validation test on startup"
+    )
     
     args = parser.parse_args()
     
-    # Determine camera mode (priority: demo > zed > realsense > webcam > auto)
+    # Determine camera mode (priority: demo > arducam > zed > realsense > webcam > auto)
     if args.demo:
         camera_mode = CameraMode.DEMO
+    elif args.arducam:
+        camera_mode = CameraMode.ARDUCAM_120
+    elif args.arducam_legacy:
+        camera_mode = CameraMode.ARDUCAM
     elif args.zed:
         camera_mode = CameraMode.ZED
     elif args.realsense:
@@ -813,8 +1157,8 @@ def main():
     elif args.webcam:
         camera_mode = CameraMode.WEBCAM
     else:
-        # Default: try ZED first (highest FPS)
-        camera_mode = CameraMode.ZED
+        # Default: try Arducam 120fps first
+        camera_mode = CameraMode.ARDUCAM_120
     
     # Handle SIGINT gracefully
     def signal_handler(sig, frame):
@@ -830,7 +1174,8 @@ def main():
         ws_port=args.ws_port,
         open_browser=not args.no_browser,
         camera_mode=camera_mode,
-        camera_index=args.camera_index
+        camera_index=args.camera_index,
+        run_validation=args.validate
     )
     
     monitor.start()
