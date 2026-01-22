@@ -7,25 +7,8 @@
   ],
   "target_line_p1": null,
   "target_line_p2": null,
-  "pixels_per_meter": 500.0,
+  "pixels_per_meter": 16.55294535724685,
   "ground_depth": 0.5,
   "depth_tolerance": 0.05,
-  "forward_angle_rad": 0.011024911614623078,
-  "camera": {
-    "primary": "arducam_120",
-    "mode": "arducam_120",
-    "width": 1280,
-    "height": 800,
-    "fps": 120,
-    "use_left_eye": true,
-    "auto_exposure": false,
-    "fallback_to_realsense": false,
-    "arducam_width": 1280,
-    "arducam_height": 800,
-    "arducam_fps": 120
-  },
-  "shot_detection": {
-    "measurement_window_ms": 100,
-    "min_measurement_frames": 5
-  }
+  "forward_angle_rad": 0.0
 }

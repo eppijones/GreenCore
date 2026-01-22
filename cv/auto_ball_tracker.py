@@ -20,6 +20,7 @@ import numpy as np
 import cv2
 
 from .calibration import Calibration
+from .ball_detector import BallDetector, DetectorConfig, BallDetection
 
 
 class TrackerState(Enum):
@@ -132,6 +133,11 @@ class AutoBallTracker:
         
         # Callbacks
         self._on_shot_complete: Optional[callable] = None
+        
+        # Shared ball detector for consistent detection
+        self._ball_detector = BallDetector(DetectorConfig(
+            scale_px_per_cm=self.calibration.data.pixels_per_meter / 100 if self.calibration.data.pixels_per_meter else 11.7,
+        ))
     
     def set_shot_complete_callback(self, callback):
         """Set callback for when we should resume tracking."""
@@ -340,73 +346,22 @@ class AutoBallTracker:
         color_frame: np.ndarray,
         gray_frame: np.ndarray
     ) -> Optional[Tuple[int, int]]:
-        """Auto-detect golf ball in full frame."""
+        """Auto-detect golf ball in full frame using shared detector."""
         
-        # Blur to reduce noise
-        blurred = cv2.GaussianBlur(gray_frame, (5, 5), 0)
+        # Use shared ball detector for consistent detection
+        detection = self._ball_detector.detect(color_frame, gray_frame)
         
-        # Threshold for bright objects
-        _, mask = cv2.threshold(blurred, self.config.min_brightness, 255, cv2.THRESH_BINARY)
-        
-        # Also use HSV for white detection
-        hsv = cv2.cvtColor(color_frame, cv2.COLOR_BGR2HSV)
-        lower_white = np.array([0, 0, 180])
-        upper_white = np.array([180, 50, 255])
-        mask_white = cv2.inRange(hsv, lower_white, upper_white)
-        
-        # Combine masks
-        combined = cv2.bitwise_or(mask, mask_white)
-        
-        # Morphological cleanup
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Find best ball candidate
-        best_candidate = None
-        best_score = 0
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            
-            if area < self.config.min_area or area > self.config.max_area:
-                continue
-            
-            # Circularity
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter == 0:
-                continue
-            circularity = 4 * math.pi * area / (perimeter * perimeter)
-            
-            if circularity < self.config.min_circularity:
-                continue
-            
-            # Get centroid
-            moments = cv2.moments(contour)
-            if moments['m00'] == 0:
-                continue
-            
-            cx = int(moments['m10'] / moments['m00'])
-            cy = int(moments['m01'] / moments['m00'])
-            
+        if detection.detected:
             # Skip if too close to edge
             margin = self.config.edge_margin * 2
-            if cx < margin or cx > self._frame_width - margin:
-                continue
-            if cy < margin or cy > self._frame_height - margin:
-                continue
+            if detection.x < margin or detection.x > self._frame_width - margin:
+                return None
+            if detection.y < margin or detection.y > self._frame_height - margin:
+                return None
             
-            # Score based on circularity and area (prefer larger, rounder)
-            score = circularity * 2 + (area / self.config.max_area)
-            
-            if score > best_score:
-                best_score = score
-                best_candidate = (cx, cy)
+            return (detection.x, detection.y)
         
-        return best_candidate
+        return None
     
     def _track_near_position(
         self,
@@ -455,75 +410,18 @@ class AutoBallTracker:
         color_roi: np.ndarray,
         gray_roi: np.ndarray
     ) -> Optional[Tuple[int, int]]:
-        """Detect ball in ROI."""
+        """Detect ball in ROI using shared detector."""
         
         if gray_roi.size == 0:
             return None
         
-        # Blur
-        blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
+        # Use shared detector (without ROI offset since we're passing a cropped frame)
+        detection = self._ball_detector.detect(color_roi, gray_roi)
         
-        # Adaptive threshold based on ROI brightness
-        mean_brightness = np.mean(blurred)
-        threshold = max(150, min(230, mean_brightness + 30))
+        if detection.detected:
+            return (detection.x, detection.y)
         
-        _, mask = cv2.threshold(blurred, int(threshold), 255, cv2.THRESH_BINARY)
-        
-        # HSV white detection
-        hsv = cv2.cvtColor(color_roi, cv2.COLOR_BGR2HSV)
-        lower_white = np.array([0, 0, 170])
-        upper_white = np.array([180, 60, 255])
-        mask_white = cv2.inRange(hsv, lower_white, upper_white)
-        
-        combined = cv2.bitwise_or(mask, mask_white)
-        
-        # Cleanup
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        best_candidate = None
-        best_score = 0
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            
-            if area < 100 or area > 15000:
-                continue
-            
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter == 0:
-                continue
-            circularity = 4 * math.pi * area / (perimeter * perimeter)
-            
-            if circularity < 0.4:
-                continue
-            
-            moments = cv2.moments(contour)
-            if moments['m00'] == 0:
-                continue
-            
-            cx = int(moments['m10'] / moments['m00'])
-            cy = int(moments['m01'] / moments['m00'])
-            
-            # Score
-            score = circularity * 2 + (area / 5000)
-            
-            # Prefer center of ROI (closer to expected position)
-            roi_h, roi_w = gray_roi.shape[:2]
-            dist_to_center = math.sqrt((cx - roi_w/2)**2 + (cy - roi_h/2)**2)
-            max_dist = math.sqrt((roi_w/2)**2 + (roi_h/2)**2)
-            center_score = 1.0 - (dist_to_center / max_dist)
-            score += center_score * 2
-            
-            if score > best_score:
-                best_score = score
-                best_candidate = (cx, cy)
-        
-        return best_candidate
+        return None
     
     def _create_result(
         self,

@@ -36,6 +36,9 @@ from typing import Optional, Tuple
 # Camera imports
 from cv.arducam_120fps import Arducam120FPS, CaptureConfig, CaptureError
 
+# Shared ball detector
+from cv.ball_detector import BallDetector, DetectorConfig, BallDetection
+
 
 @dataclass
 class AlignmentConfig:
@@ -49,16 +52,24 @@ class AlignmentConfig:
     # Divider position (fraction of ROI width for putting zone)
     putting_zone_fraction: float = 0.5
     
-    # Scale (pixels per cm)
+    # Scale (pixels per cm) - calibrated for 78cm camera height
     scale_px_per_cm: float = 11.7
     
-    # Camera height (cm)
+    # Camera height (cm) - distance from camera to putting surface
     camera_height_cm: float = 78.0
+    
+    # Zone depth (cm) - the tracking zone depth
+    zone_depth_cm: float = 30.0
     
     # Expected ball diameter in pixels (based on scale and real ball ~4.27cm)
     @property
     def expected_ball_px(self) -> int:
         return int(4.27 * self.scale_px_per_cm)
+    
+    # Zone depth in pixels
+    @property
+    def zone_depth_px(self) -> int:
+        return int(self.zone_depth_cm * self.scale_px_per_cm)
     
     # Lock state
     locked: bool = False
@@ -85,12 +96,13 @@ class CameraAlignmentMode:
         # Camera
         self.camera: Optional[Arducam120FPS] = None
         
+        # Shared ball detector
+        self.detector: Optional[BallDetector] = None
+        self.last_detection: Optional[BallDetection] = None
+        
         # State
         self._running = False
         self.show_grid = True
-        self.ball_detected = False
-        self.ball_position: Optional[Tuple[int, int]] = None
-        self.ball_radius: int = 0
         
         # Window
         self.window_name = "Camera Alignment Mode"
@@ -172,6 +184,19 @@ class CameraAlignmentMode:
             self.camera.start()
             print("[Align] Camera initialized!")
             
+            # Initialize shared ball detector
+            detector_cfg = DetectorConfig(
+                scale_px_per_cm=self.align_config.scale_px_per_cm,
+                roi=(
+                    self.align_config.roi_x,
+                    self.align_config.roi_y,
+                    self.align_config.roi_width,
+                    self.align_config.roi_height
+                )
+            )
+            self.detector = BallDetector(detector_cfg)
+            print("[Align] Ball detector initialized!")
+            
             # Create window
             cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.window_name, 1280, 800)
@@ -214,8 +239,8 @@ class CameraAlignmentMode:
             frame = frame_data.color_frame
             gray = frame_data.gray_frame
             
-            # Detect ball
-            self._detect_ball(gray)
+            # Detect ball using shared detector
+            self.last_detection = self.detector.detect(frame, gray, frame_data.timestamp)
             
             # Draw overlays
             display = self._draw_overlays(frame)
@@ -227,45 +252,6 @@ class CameraAlignmentMode:
             key = cv2.waitKey(1) & 0xFF
             if not self._handle_key(key):
                 break
-    
-    def _detect_ball(self, gray: np.ndarray):
-        """Detect golf ball in frame."""
-        # Apply blur
-        blurred = cv2.GaussianBlur(gray, (9, 9), 2)
-        
-        # Expected ball size range
-        expected = self.align_config.expected_ball_px
-        min_radius = max(10, int(expected * 0.7))
-        max_radius = int(expected * 1.5)
-        
-        # Hough circles
-        circles = cv2.HoughCircles(
-            blurred,
-            cv2.HOUGH_GRADIENT,
-            dp=1.2,
-            minDist=50,
-            param1=50,
-            param2=30,
-            minRadius=min_radius,
-            maxRadius=max_radius
-        )
-        
-        if circles is not None:
-            circles = np.uint16(np.around(circles))
-            # Take the best match (first one)
-            x, y, r = circles[0][0]
-            
-            # Check if within ROI
-            roi = self.align_config
-            if (roi.roi_x < x < roi.roi_x + roi.roi_width and
-                roi.roi_y < y < roi.roi_y + roi.roi_height):
-                self.ball_detected = True
-                self.ball_position = (int(x), int(y))
-                self.ball_radius = int(r)
-                return
-        
-        self.ball_detected = False
-        self.ball_position = None
     
     def _draw_overlays(self, frame: np.ndarray) -> np.ndarray:
         """Draw alignment overlays on frame."""
@@ -328,9 +314,10 @@ class CameraAlignmentMode:
         cv2.addWeighted(overlay, 0.7, display, 0.3, 0, display)
         
         # Draw ball detection
-        if self.ball_detected and self.ball_position:
-            bx, by = self.ball_position
-            br = self.ball_radius
+        det = self.last_detection
+        if det and det.detected:
+            bx, by = det.x, det.y
+            br = det.radius
             
             # Target crosshairs
             cv2.circle(display, (bx, by), br + 10, GREEN, 2)
@@ -348,6 +335,11 @@ class CameraAlignmentMode:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, GREEN, 1)
             cv2.putText(display, "BALL OK", (bx - 35, by + br + 35),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, GREEN, 1)
+            
+            # Confidence indicator
+            conf_text = f"Conf: {det.confidence:.0%}"
+            cv2.putText(display, conf_text, (bx - 30, by + br + 55),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, GREEN, 1)
         
         # Draw header
         header_text = "CAMERA LOCKED ???" if cfg.locked else "CAMERA ALIGNMENT MODE"
@@ -406,8 +398,9 @@ class CameraAlignmentMode:
                    (80, y2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
         # Ball status
-        if self.ball_detected:
-            ball_text = f"Ball: {self.ball_radius*2}px ALIGNED"
+        det = self.last_detection
+        if det and det.detected:
+            ball_text = f"Ball: {det.diameter}px ALIGNED"
             ball_color = (0, 255, 0)
         else:
             ball_text = "Ball: NOT FOUND"
@@ -456,13 +449,20 @@ class CameraAlignmentMode:
             print("[Align] Reset to defaults")
         
         elif key == ord('s'):
-            # Snap to ball - auto-calibrate ball position
-            if self.ball_detected and self.ball_position:
+            # Snap to ball - auto-calibrate scale from detected ball
+            det = self.last_detection
+            if det and det.detected:
                 # Estimate scale from ball size (real ball = 4.27cm)
                 real_diameter_cm = 4.27
-                detected_diameter_px = self.ball_radius * 2
+                detected_diameter_px = det.diameter
                 cfg.scale_px_per_cm = detected_diameter_px / real_diameter_cm
+                
+                # Update detector config too
+                if self.detector:
+                    self.detector.config.scale_px_per_cm = cfg.scale_px_per_cm
+                
                 print(f"[Align] Scale calibrated: {cfg.scale_px_per_cm:.1f} px/cm")
+                print(f"[Align] Ball detected at {det.diameter}px diameter")
                 self._save_config()
         
         elif key == ord('c'):
