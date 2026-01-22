@@ -33,6 +33,9 @@ const CONFIG = {
     gridColor: 0xffffff,
     gridOpacity: 0.1,
     bgColor: 0x050505,
+    
+    // WebSocket
+    wsUrl: 'ws://localhost:8765',
 };
 
 // ============================================================================
