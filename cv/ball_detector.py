@@ -8,7 +8,7 @@ High-accuracy detection optimized for:
 - 120fps Arducam global shutter
 - Left-to-right ball tracking
 
-This module is shared between camera_alignment.py and main.py
+This module is shared between putting_tracker.py and main.py
 to ensure consistent detection and tracking.
 """
 
