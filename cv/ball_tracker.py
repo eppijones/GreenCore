@@ -2,18 +2,23 @@
 Ball tracker module using classical computer vision.
 
 Detects and tracks a golf ball using IR imagery with depth validation.
+Supports ArUco-based homography for accurate pixel→world coordinate mapping.
 """
 
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, TYPE_CHECKING
 from collections import deque
 
 import numpy as np
 import cv2
 
 from .calibration import Calibration
+
+# Import ArucoCalibration for type hints (avoid circular imports)
+if TYPE_CHECKING:
+    from .calibration import ArucoCalibration
 
 
 @dataclass
@@ -95,12 +100,17 @@ class BallTracker:
     5. Contour detection
     6. Filter by area, circularity, and depth
     7. Track over time with trajectory buffer
+    
+    Coordinate Transformation:
+    - Uses ArUco homography when available (accurate across entire mat)
+    - Falls back to simple pixels_per_meter scaling if no homography
     """
     
     def __init__(
         self, 
         calibration: Calibration,
-        config: Optional[TrackerConfig] = None
+        config: Optional[TrackerConfig] = None,
+        aruco_calibration: Optional['ArucoCalibration'] = None
     ):
         """
         Initialize ball tracker.
@@ -108,9 +118,11 @@ class BallTracker:
         Args:
             calibration: Calibration data for coordinate conversion.
             config: Tracker configuration.
+            aruco_calibration: Optional ArucoCalibration for homography-based transforms.
         """
         self.calibration = calibration
         self.config = config or TrackerConfig()
+        self._aruco_calibration = aruco_calibration
         
         # Trajectory buffer
         self._trajectory: deque = deque(maxlen=self.config.max_trajectory_length)
@@ -123,6 +135,85 @@ class BallTracker:
         
         # Processing stats
         self._process_times: deque = deque(maxlen=30)
+    
+    def set_aruco_calibration(self, aruco_calibration: 'ArucoCalibration'):
+        """
+        Set the ArUco calibration for homography-based coordinate transforms.
+        
+        Args:
+            aruco_calibration: ArucoCalibration instance with valid homography.
+        """
+        self._aruco_calibration = aruco_calibration
+        if aruco_calibration and aruco_calibration.is_ready:
+            print("[BallTracker] Using ArUco homography for coordinate transforms")
+        else:
+            print("[BallTracker] ArUco calibration set but not ready, using legacy scaling")
+    
+    def _pixel_to_world(self, pixel_x: float, pixel_y: float) -> Tuple[float, float]:
+        """
+        Convert pixel coordinates to world coordinates.
+        
+        Uses homography if available, otherwise falls back to legacy scaling.
+        
+        Args:
+            pixel_x: X coordinate in pixels (full frame).
+            pixel_y: Y coordinate in pixels (full frame).
+            
+        Returns:
+            (world_x, world_y) in meters.
+        """
+        # Use ArUco homography if available
+        if self._aruco_calibration and self._aruco_calibration.is_ready:
+            return self._aruco_calibration.pixel_to_world(pixel_x, pixel_y)
+        
+        # Fallback to legacy ROI-center based scaling
+        roi = self.calibration.data.roi
+        if roi:
+            roi_center_x = roi[0] + roi[2] / 2
+            roi_center_y = roi[1] + roi[3] / 2
+        else:
+            roi_center_x = pixel_x
+            roi_center_y = pixel_y
+        
+        world_x = self.calibration.pixels_to_meters(pixel_x - roi_center_x)
+        world_y = self.calibration.pixels_to_meters(pixel_y - roi_center_y)
+        
+        return (world_x, world_y)
+    
+    def _pixel_distance_to_meters(self, pixel_distance: float, pixel_x: float = 0, pixel_y: float = 0) -> float:
+        """
+        Convert a pixel distance to meters.
+        
+        For homography, this is approximate since scale varies across the image.
+        Uses the local Jacobian at the given position for accuracy.
+        
+        Args:
+            pixel_distance: Distance in pixels.
+            pixel_x: Reference X position for local scale (optional).
+            pixel_y: Reference Y position for local scale (optional).
+            
+        Returns:
+            Approximate distance in meters.
+        """
+        # Use ArUco homography if available - compute local scale from Jacobian
+        if self._aruco_calibration and self._aruco_calibration.is_ready:
+            # Sample nearby points to estimate local scale
+            delta = max(1.0, pixel_distance / 10)  # Small delta for numerical gradient
+            
+            # Get world coords at reference point and offset
+            w0 = self._aruco_calibration.pixel_to_world(pixel_x, pixel_y)
+            w1 = self._aruco_calibration.pixel_to_world(pixel_x + delta, pixel_y)
+            w2 = self._aruco_calibration.pixel_to_world(pixel_x, pixel_y + delta)
+            
+            # Compute local scale (average of x and y directions)
+            scale_x = math.sqrt((w1[0] - w0[0])**2 + (w1[1] - w0[1])**2) / delta
+            scale_y = math.sqrt((w2[0] - w0[0])**2 + (w2[1] - w0[1])**2) / delta
+            local_scale = (scale_x + scale_y) / 2
+            
+            return pixel_distance * local_scale
+        
+        # Fallback to legacy scaling
+        return self.calibration.pixels_to_meters(pixel_distance)
     
     def update(
         self, 
@@ -329,18 +420,8 @@ class BallTracker:
         pixel_x = best_candidate['cx'] + roi_offset[0]
         pixel_y = best_candidate['cy'] + roi_offset[1]
         
-        # Convert to world coordinates (meters)
-        # Origin at ROI center, +X right, +Y down in image (forward in world)
-        roi = self.calibration.data.roi
-        if roi:
-            roi_center_x = roi[0] + roi[2] / 2
-            roi_center_y = roi[1] + roi[3] / 2
-        else:
-            roi_center_x = pixel_x
-            roi_center_y = pixel_y
-        
-        world_x = self.calibration.pixels_to_meters(pixel_x - roi_center_x)
-        world_y = self.calibration.pixels_to_meters(pixel_y - roi_center_y)
+        # Convert to world coordinates using homography or legacy scaling
+        world_x, world_y = self._pixel_to_world(pixel_x, pixel_y)
         
         return TrackingResult(
             detected=True,
@@ -373,10 +454,14 @@ class BallTracker:
             
             dx = cx - self._last_detection.pixel_x
             dy = cy - self._last_detection.pixel_y
-            distance = math.sqrt(dx*dx + dy*dy)
+            distance_px = math.sqrt(dx*dx + dy*dy)
             
-            # Convert to meters
-            distance_m = self.calibration.pixels_to_meters(distance)
+            # Convert to meters using homography-aware method
+            distance_m = self._pixel_distance_to_meters(
+                distance_px, 
+                self._last_detection.pixel_x, 
+                self._last_detection.pixel_y
+            )
             
             # Reject if too far (unlikely to be same ball)
             if distance_m > self.config.max_jump_distance:

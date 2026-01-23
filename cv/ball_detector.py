@@ -4,7 +4,7 @@ Ball Detector - Unified Golf Ball Detection Module
 
 High-accuracy detection optimized for:
 - White golf ball on dark putting surface
-- 78-80cm camera height
+- 80cm camera height (11.7 px/cm scale)
 - 120fps Arducam global shutter
 - Left-to-right ball tracking
 
@@ -42,7 +42,7 @@ class BallDetection:
 class DetectorConfig:
     """Ball detector configuration."""
     # Scale calibration
-    scale_px_per_cm: float = 11.7  # Pixels per cm at 78cm height
+    scale_px_per_cm: float = 11.7  # Pixels per cm at 80cm height
     
     # Ball physical size
     ball_diameter_cm: float = 4.27  # Standard golf ball
@@ -206,12 +206,19 @@ class BallDetector:
             if circularity < cfg.min_circularity:
                 continue
             
-            # Get enclosing circle
-            (cx, cy), radius = cv2.minEnclosingCircle(contour)
+            # Get enclosing circle for radius
+            _, radius = cv2.minEnclosingCircle(contour)
             
             # Verify radius
             if not (cfg.min_radius <= radius <= cfg.max_radius):
                 continue
+            
+            # Use moments for accurate centroid (more precise than minEnclosingCircle center)
+            M = cv2.moments(contour)
+            if M['m00'] == 0:
+                continue
+            cx = M['m10'] / M['m00']
+            cy = M['m01'] / M['m00']
             
             # Score based on circularity and size match
             expected_r = cfg.expected_ball_px / 2
@@ -220,14 +227,14 @@ class BallDetector:
             
             if score > best_score:
                 best_score = score
-                best_match = (int(cx), int(cy), int(radius), score)
+                best_match = (cx, cy, int(radius), score)
         
         if best_match:
             cx, cy, radius, score = best_match
             return BallDetection(
                 detected=True,
-                x=offset_x + cx,
-                y=offset_y + cy,
+                x=offset_x + int(round(cx)),
+                y=offset_y + int(round(cy)),
                 radius=radius,
                 confidence=min(1.0, score),
                 timestamp=timestamp

@@ -177,3 +177,456 @@ body {
     opacity: 0;
     pointer-events: none;
 }
+
+/* ============================================
+   TEST LAB MODE
+   ============================================ */
+
+/* Toggle Button */
+.lab-toggle-btn {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-main);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    cursor: pointer;
+    pointer-events: all;
+    transition: all 0.2s ease;
+    backdrop-filter: blur(10px);
+}
+
+.lab-toggle-btn:hover {
+    background: rgba(40, 40, 40, 0.9);
+    border-color: var(--accent-color);
+}
+
+.lab-toggle-btn.active {
+    background: rgba(74, 222, 128, 0.15);
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+.lab-toggle-btn svg {
+    opacity: 0.8;
+}
+
+/* Test Lab Panel */
+#test-lab-panel {
+    position: fixed;
+    top: 80px;
+    right: 24px;
+    width: 320px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+    background: rgba(15, 15, 15, 0.95);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    backdrop-filter: blur(20px);
+    z-index: 100;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+#test-lab-panel.hidden {
+    display: none;
+}
+
+/* Panel Header */
+.lab-header {
+    padding: 20px;
+    border-bottom: 1px solid var(--border-color);
+    position: relative;
+}
+
+.lab-header h2 {
+    font-size: 16px;
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.lab-subtitle {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.lab-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 18px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.lab-close:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-main);
+}
+
+/* Lab Sections */
+.lab-section {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.lab-section:last-child {
+    border-bottom: none;
+}
+
+.lab-section h3 {
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+}
+
+/* Marker Grid */
+.marker-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.marker-status {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    transition: all 0.2s;
+}
+
+.marker-status.detected {
+    background: rgba(74, 222, 128, 0.1);
+    border-color: rgba(74, 222, 128, 0.3);
+}
+
+.marker-id {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.marker-state {
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.marker-status.detected .marker-state {
+    color: var(--accent-color);
+}
+
+.detection-summary {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
+}
+
+#markers-detected {
+    color: var(--accent-color);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Dimension Inputs */
+.dimension-inputs {
+    display: flex;
+    gap: 12px;
+}
+
+.dimension-inputs label {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.dimension-inputs input {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-main);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+}
+
+.dimension-inputs input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+}
+
+/* Calibration Status */
+.calibration-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+}
+
+.status-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ef4444;
+}
+
+.status-indicator.calibrated {
+    background: var(--accent-color);
+    box-shadow: 0 0 10px rgba(74, 222, 128, 0.4);
+}
+
+.status-indicator.not-calibrated {
+    background: #ef4444;
+}
+
+/* Lab Buttons */
+.lab-btn {
+    display: block;
+    width: 100%;
+    padding: 10px 16px;
+    margin-top: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-main);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.lab-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.lab-btn.primary {
+    background: rgba(74, 222, 128, 0.15);
+    border-color: rgba(74, 222, 128, 0.3);
+    color: var(--accent-color);
+}
+
+.lab-btn.primary:hover {
+    background: rgba(74, 222, 128, 0.25);
+}
+
+.lab-btn.small {
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+.lab-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* Lab Hints */
+.lab-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin: 8px 0;
+    line-height: 1.4;
+}
+
+/* Test Results */
+.test-results {
+    margin-top: 12px;
+}
+
+.test-row {
+    display: grid;
+    grid-template-columns: 60px 1fr 80px;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 4px;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+
+.test-distance {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-dim);
+}
+
+.test-measured {
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.test-error {
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+}
+
+.test-error.good {
+    color: var(--accent-color);
+}
+
+.test-error.warning {
+    color: #f59e0b;
+}
+
+.test-error.bad {
+    color: #ef4444;
+}
+
+/* Toggle Label */
+.toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    cursor: pointer;
+    margin: 12px 0;
+}
+
+.toggle-label input[type="checkbox"] {
+    width: 40px;
+    height: 22px;
+    appearance: none;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 11px;
+    position: relative;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.toggle-label input[type="checkbox"]:checked {
+    background: rgba(74, 222, 128, 0.3);
+}
+
+.toggle-label input[type="checkbox"]::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: all 0.2s;
+}
+
+.toggle-label input[type="checkbox"]:checked::before {
+    left: 20px;
+    background: var(--accent-color);
+}
+
+.toggle-label input[type="checkbox"]:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* Collapsible Sections */
+.collapsible-header {
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.collapse-icon {
+    font-size: 10px;
+    transition: transform 0.2s;
+}
+
+.collapsible.collapsed .collapse-icon {
+    transform: rotate(-90deg);
+}
+
+.collapsible.collapsed .collapsible-content {
+    display: none;
+}
+
+/* Intrinsics Progress */
+#intrinsics-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+}
+
+#intrinsics-progress span {
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+#intrinsics-frames {
+    color: var(--accent-color);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* Scrollbar Styling */
+#test-lab-panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+#test-lab-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#test-lab-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+}
+
+#test-lab-panel::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* Toast Notification Animation */
+@keyframes toastSlideIn {
+    from {
+        transform: translate(-50%, 20px);
+        opacity: 0;
+    }
+    to {
+        transform: translate(-50%, 0);
+        opacity: 1;
+    }
+}
+
+.toast {
+    font-family: 'Inter', sans-serif;
+}
+
+/* Error/Warning states for calibration */
+.calibration-status.error {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.calibration-status.success {
+    background: rgba(74, 222, 128, 0.1);
+    border: 1px solid rgba(74, 222, 128, 0.3);
+}

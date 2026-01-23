@@ -1,14 +1,85 @@
 {
   "roi": [
-    152,
-    77,
-    1112,
-    497
+    5,
+    100,
+    1270,
+    620
   ],
-  "target_line_p1": null,
-  "target_line_p2": null,
-  "pixels_per_meter": 16.55294535724685,
+  "target_line_p1": [
+    216,
+    397
+  ],
+  "target_line_p2": [
+    175,
+    345
+  ],
+  "pixels_per_meter": 1170.0,
   "ground_depth": 0.5,
   "depth_tolerance": 0.05,
-  "forward_angle_rad": 0.0
+  "forward_angle_rad": -2.2384619153882515,
+  "mat_width_m": 0.7,
+  "mat_height_m": 1,
+  "homography_matrix": [
+    0.022217027088218974,
+    -8.516932618703871e-05,
+    -0.8517723476732759,
+    -0.002024872804286547,
+    -0.002180632250770128,
+    1.454131252509087,
+    -0.00010725967458733847,
+    1.8465375031716033e-05,
+    1.0
+  ],
+  "marker_corners_px": {
+    "25": [
+      39.0,
+      172.5
+    ],
+    "22": [
+      70.25,
+      145.25
+    ],
+    "23": [
+      40.75,
+      629.0
+    ],
+    "26": [
+      72.25,
+      599.75
+    ]
+  },
+  "marker_corners_world": {
+    "23": [
+      0.0,
+      0.0
+    ],
+    "26": [
+      0.7,
+      0.0
+    ],
+    "22": [
+      0.7,
+      1
+    ],
+    "25": [
+      0.0,
+      1
+    ]
+  },
+  "aruco_marker_size_m": 0.05,
+  "camera_matrix": null,
+  "dist_coeffs": null,
+  "undistortion_enabled": false,
+  "undistort_map_size": null,
+  "alignment": {
+    "roi_x": 5,
+    "roi_y": 100,
+    "roi_width": 1270,
+    "roi_height": 620,
+    "putting_zone_fraction": 0.15,
+    "scale_px_per_cm": 11.7,
+    "camera_height_cm": 80.0,
+    "locked": true,
+    "tracking_enabled": true
+  }
 }

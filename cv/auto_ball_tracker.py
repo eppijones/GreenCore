@@ -7,12 +7,13 @@ Features:
 - Waits for virtual simulation before resuming
 - Uses full frame (no ROI required)
 - Click-to-track as fallback
+- ArUco homography support for accurate world coordinates
 """
 
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, TYPE_CHECKING
 from collections import deque
 from enum import Enum
 
@@ -21,6 +22,10 @@ import cv2
 
 from .calibration import Calibration
 from .ball_detector import BallDetector, DetectorConfig, BallDetection
+
+# Import ArucoCalibration for type hints (avoid circular imports)
+if TYPE_CHECKING:
+    from .calibration import ArucoCalibration
 
 
 class TrackerState(Enum):
@@ -138,6 +143,22 @@ class AutoBallTracker:
         self._ball_detector = BallDetector(DetectorConfig(
             scale_px_per_cm=self.calibration.data.pixels_per_meter / 100 if self.calibration.data.pixels_per_meter else 11.7,
         ))
+        
+        # ArUco calibration for homography-based coordinate transforms
+        self._aruco_calibration: Optional['ArucoCalibration'] = None
+    
+    def set_aruco_calibration(self, aruco_calibration: 'ArucoCalibration'):
+        """
+        Set the ArUco calibration for homography-based coordinate transforms.
+        
+        Args:
+            aruco_calibration: ArucoCalibration instance with valid homography.
+        """
+        self._aruco_calibration = aruco_calibration
+        if aruco_calibration and aruco_calibration.is_ready:
+            print("[AutoTracker] Using ArUco homography for coordinate transforms")
+        else:
+            print("[AutoTracker] ArUco calibration set but not ready, using legacy scaling")
     
     def set_shot_complete_callback(self, callback):
         """Set callback for when we should resume tracking."""
@@ -435,17 +456,21 @@ class AutoBallTracker:
         px, py = pixel_pos
         
         # Convert to world coordinates
-        # Use frame center as origin if no ROI
-        roi = self.calibration.data.roi
-        if roi:
-            roi_center_x = roi[0] + roi[2] / 2
-            roi_center_y = roi[1] + roi[3] / 2
+        # Use ArUco homography if available, otherwise fall back to legacy scaling
+        if self._aruco_calibration and self._aruco_calibration.is_ready:
+            world_x, world_y = self._aruco_calibration.pixel_to_world(px, py)
         else:
-            roi_center_x = self._frame_width / 2
-            roi_center_y = self._frame_height / 2
-        
-        world_x = self.calibration.pixels_to_meters(px - roi_center_x)
-        world_y = self.calibration.pixels_to_meters(py - roi_center_y)
+            # Legacy: Use frame center as origin if no ROI
+            roi = self.calibration.data.roi
+            if roi:
+                roi_center_x = roi[0] + roi[2] / 2
+                roi_center_y = roi[1] + roi[3] / 2
+            else:
+                roi_center_x = self._frame_width / 2
+                roi_center_y = self._frame_height / 2
+            
+            world_x = self.calibration.pixels_to_meters(px - roi_center_x)
+            world_y = self.calibration.pixels_to_meters(py - roi_center_y)
         
         return TrackingResult(
             detected=True,

@@ -52,6 +52,126 @@
             <span><span class="key">R</span>RESET</span>
             <span><span class="key">T</span>TEST SHOT</span>
             <span><span class="key">L</span>AIM LINES</span>
+            <span><span class="key">C</span>CALIBRATE</span>
+        </div>
+
+        <!-- Test Lab Mode Toggle Button -->
+        <button id="test-lab-toggle" class="lab-toggle-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4"/>
+                <circle cx="12" cy="12" r="3"/>
+            </svg>
+            <span>Test Lab</span>
+        </button>
+    </div>
+
+    <!-- Test Lab Mode Panel -->
+    <div id="test-lab-panel" class="hidden">
+        <div class="lab-header">
+            <h2>Test Lab Mode</h2>
+            <span class="lab-subtitle">ArUco Homography Calibration</span>
+            <button id="lab-close-btn" class="lab-close">&times;</button>
+        </div>
+
+        <!-- Marker Detection Status -->
+        <div class="lab-section">
+            <h3>Marker Detection</h3>
+            <div class="marker-grid">
+                <div class="marker-status" id="marker-0">
+                    <span class="marker-id">ID 0</span>
+                    <span class="marker-state">--</span>
+                </div>
+                <div class="marker-status" id="marker-1">
+                    <span class="marker-id">ID 1</span>
+                    <span class="marker-state">--</span>
+                </div>
+                <div class="marker-status" id="marker-2">
+                    <span class="marker-id">ID 2</span>
+                    <span class="marker-state">--</span>
+                </div>
+                <div class="marker-status" id="marker-3">
+                    <span class="marker-id">ID 3</span>
+                    <span class="marker-state">--</span>
+                </div>
+            </div>
+            <div class="detection-summary" id="detection-summary">
+                Markers: <span id="markers-detected">0</span>/4 detected
+            </div>
+        </div>
+
+        <!-- Mat Dimensions -->
+        <div class="lab-section">
+            <h3>Mat Dimensions</h3>
+            <div class="dimension-inputs">
+                <label>
+                    Width (m):
+                    <input type="number" id="mat-width" value="0.70" step="0.01" min="0.1" max="2.0">
+                </label>
+                <label>
+                    Height (m):
+                    <input type="number" id="mat-height" value="1.00" step="0.01" min="0.1" max="3.0">
+                </label>
+            </div>
+        </div>
+
+        <!-- Calibration Status -->
+        <div class="lab-section">
+            <h3>Homography Status</h3>
+            <div class="calibration-status" id="homography-status">
+                <span class="status-indicator not-calibrated"></span>
+                <span>Not Calibrated</span>
+            </div>
+            <button id="btn-calibrate" class="lab-btn primary">Calibrate Homography</button>
+            <button id="btn-save-calibration" class="lab-btn">Save to Config</button>
+        </div>
+
+        <!-- Distance Tests -->
+        <div class="lab-section">
+            <h3>Distance Verification</h3>
+            <p class="lab-hint">Place distance markers (IDs 10-12) at known distances from origin</p>
+            <button id="btn-run-tests" class="lab-btn">Run Distance Tests</button>
+            <div class="test-results" id="test-results">
+                <div class="test-row">
+                    <span class="test-distance">0.30m</span>
+                    <span class="test-measured" id="test-30cm">--</span>
+                    <span class="test-error" id="error-30cm">--</span>
+                </div>
+                <div class="test-row">
+                    <span class="test-distance">0.60m</span>
+                    <span class="test-measured" id="test-60cm">--</span>
+                    <span class="test-error" id="error-60cm">--</span>
+                </div>
+                <div class="test-row">
+                    <span class="test-distance">0.80m</span>
+                    <span class="test-measured" id="test-80cm">--</span>
+                    <span class="test-error" id="error-80cm">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lens Undistortion (Optional) -->
+        <div class="lab-section collapsible">
+            <h3 class="collapsible-header">
+                Lens Undistortion
+                <span class="collapse-icon">▼</span>
+            </h3>
+            <div class="collapsible-content">
+                <div class="calibration-status" id="intrinsics-status">
+                    <span class="status-indicator not-calibrated"></span>
+                    <span>Not Calibrated</span>
+                </div>
+                <label class="toggle-label">
+                    <input type="checkbox" id="undistort-toggle" disabled>
+                    <span>Enable Undistortion</span>
+                </label>
+                <p class="lab-hint">Use ChArUco board to calibrate lens distortion</p>
+                <button id="btn-start-intrinsics" class="lab-btn small">Start Intrinsics Calibration</button>
+                <div id="intrinsics-progress" class="hidden">
+                    <span>Frames: <span id="intrinsics-frames">0</span>/15</span>
+                    <button id="btn-capture-frame" class="lab-btn small">Capture Frame</button>
+                    <button id="btn-compute-intrinsics" class="lab-btn small primary" disabled>Compute</button>
+                </div>
+            </div>
         </div>
     </div>
 

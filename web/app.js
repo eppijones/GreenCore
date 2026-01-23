@@ -52,6 +52,16 @@ const state = {
     connected: false,
     clock: new THREE.Clock(),
     showAimLines: true,
+    
+    // Test Lab Mode state
+    testLabMode: false,
+    calibration: {
+        markersDetected: [],
+        homographyValid: false,
+        intrinsicsValid: false,
+        undistortionEnabled: false,
+        intrinsicsFrames: 0,
+    },
 };
 
 // ============================================================================
@@ -72,6 +82,7 @@ function init() {
     createAimingGuides();
     setupWebSocket();
     setupEvents();
+    setupTestLabMode();
     
     // Hide loading screen
     setTimeout(() => {
@@ -424,18 +435,75 @@ function setupWebSocket() {
     state.ws = new WebSocket(CONFIG.wsUrl); // Try local
     
     state.ws.onopen = () => {
+        state.connected = true;
         document.querySelector('#connection-status').classList.add('connected');
+        console.log('[WS] Connected to server');
+        
+        // Request initial calibration status
+        sendCalibrationMessage({ type: 'get_calibration_status' });
+    };
+    
+    state.ws.onclose = () => {
+        state.connected = false;
+        document.querySelector('#connection-status').classList.remove('connected');
+        console.log('[WS] Disconnected from server');
+        
+        // Attempt reconnection after 3 seconds
+        setTimeout(() => {
+            if (!state.connected) {
+                console.log('[WS] Attempting reconnection...');
+                setupWebSocket();
+            }
+        }, 3000);
+    };
+    
+    state.ws.onerror = (err) => {
+        console.log('[WS] Connection error');
     };
     
     state.ws.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
-            if (data.speed_mps) {
+            
+            // Handle shot events
+            if (data.speed_mps !== undefined) {
                 updateHUD(data);
                 startShot(data.speed_mps, data.direction_deg);
             }
-        } catch(err) {}
+            
+            // Handle calibration status updates
+            if (data.type === 'calibration_status') {
+                handleCalibrationStatus(data);
+            }
+            
+            // Handle calibration errors
+            if (data.type === 'calibration_error') {
+                console.error('[Calibration] Error:', data.error);
+                showCalibrationMessage(data.error, 'error');
+            }
+            
+            // Handle distance test results
+            if (data.type === 'distance_test_results') {
+                handleDistanceTestResults(data);
+            }
+            
+            // Handle intrinsics calibration progress
+            if (data.type === 'intrinsics_progress') {
+                handleIntrinsicsProgress(data);
+            }
+            
+        } catch(err) {
+            console.log('[WS] Parse error:', err);
+        }
     };
+}
+
+function sendCalibrationMessage(msg) {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify(msg));
+    } else {
+        console.log('[WS] Cannot send - not connected');
+    }
 }
 
 function updateHUD(data) {
@@ -468,8 +536,392 @@ function setupEvents() {
                 state.showAimLines = !state.showAimLines;
                 aimLineGroup.visible = state.showAimLines;
                 break;
+            case 'c':
+                // Toggle Test Lab Mode
+                toggleTestLabMode();
+                break;
         }
     });
+}
+
+// ============================================================================
+// Test Lab Mode
+// ============================================================================
+
+function setupTestLabMode() {
+    // Toggle button
+    const toggleBtn = document.getElementById('test-lab-toggle');
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', toggleTestLabMode);
+    }
+    
+    // Close button
+    const closeBtn = document.getElementById('lab-close-btn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            setTestLabMode(false);
+        });
+    }
+    
+    // Calibrate button
+    const calibrateBtn = document.getElementById('btn-calibrate');
+    if (calibrateBtn) {
+        calibrateBtn.addEventListener('click', () => {
+            const width = parseFloat(document.getElementById('mat-width').value) || 0.70;
+            const height = parseFloat(document.getElementById('mat-height').value) || 1.00;
+            
+            sendCalibrationMessage({
+                type: 'start_calibration',
+                width_m: width,
+                height_m: height
+            });
+            showCalibrationMessage('Calibrating homography...', 'info');
+        });
+    }
+    
+    // Save calibration button
+    const saveBtn = document.getElementById('btn-save-calibration');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', () => {
+            sendCalibrationMessage({ type: 'save_calibration' });
+            showCalibrationMessage('Saving calibration...', 'info');
+        });
+    }
+    
+    // Run distance tests button
+    const testBtn = document.getElementById('btn-run-tests');
+    if (testBtn) {
+        testBtn.addEventListener('click', () => {
+            sendCalibrationMessage({ type: 'run_distance_test' });
+            showCalibrationMessage('Running distance tests...', 'info');
+        });
+    }
+    
+    // Mat dimension inputs
+    const matWidthInput = document.getElementById('mat-width');
+    const matHeightInput = document.getElementById('mat-height');
+    
+    if (matWidthInput) {
+        matWidthInput.addEventListener('change', () => {
+            sendCalibrationMessage({
+                type: 'set_mat_dimensions',
+                width_m: parseFloat(matWidthInput.value) || 0.70,
+                height_m: parseFloat(matHeightInput.value) || 1.00
+            });
+        });
+    }
+    
+    if (matHeightInput) {
+        matHeightInput.addEventListener('change', () => {
+            sendCalibrationMessage({
+                type: 'set_mat_dimensions',
+                width_m: parseFloat(matWidthInput.value) || 0.70,
+                height_m: parseFloat(matHeightInput.value) || 1.00
+            });
+        });
+    }
+    
+    // Undistortion toggle
+    const undistortToggle = document.getElementById('undistort-toggle');
+    if (undistortToggle) {
+        undistortToggle.addEventListener('change', () => {
+            sendCalibrationMessage({
+                type: 'toggle_undistortion',
+                enabled: undistortToggle.checked
+            });
+        });
+    }
+    
+    // Intrinsics calibration buttons
+    const startIntrinsicsBtn = document.getElementById('btn-start-intrinsics');
+    if (startIntrinsicsBtn) {
+        startIntrinsicsBtn.addEventListener('click', () => {
+            sendCalibrationMessage({ type: 'start_intrinsics_calibration' });
+            document.getElementById('intrinsics-progress').classList.remove('hidden');
+            showCalibrationMessage('Place ChArUco board in view...', 'info');
+        });
+    }
+    
+    const captureFrameBtn = document.getElementById('btn-capture-frame');
+    if (captureFrameBtn) {
+        captureFrameBtn.addEventListener('click', () => {
+            sendCalibrationMessage({ type: 'capture_intrinsics_frame' });
+        });
+    }
+    
+    const computeIntrinsicsBtn = document.getElementById('btn-compute-intrinsics');
+    if (computeIntrinsicsBtn) {
+        computeIntrinsicsBtn.addEventListener('click', () => {
+            sendCalibrationMessage({ type: 'compute_intrinsics' });
+            showCalibrationMessage('Computing intrinsics...', 'info');
+        });
+    }
+    
+    // Collapsible sections
+    const collapsibleHeaders = document.querySelectorAll('.collapsible-header');
+    collapsibleHeaders.forEach(header => {
+        header.addEventListener('click', () => {
+            const section = header.closest('.collapsible');
+            section.classList.toggle('collapsed');
+        });
+    });
+}
+
+function toggleTestLabMode() {
+    setTestLabMode(!state.testLabMode);
+}
+
+function setTestLabMode(enabled) {
+    state.testLabMode = enabled;
+    
+    const panel = document.getElementById('test-lab-panel');
+    const toggleBtn = document.getElementById('test-lab-toggle');
+    
+    if (enabled) {
+        panel.classList.remove('hidden');
+        toggleBtn.classList.add('active');
+        
+        // Request current calibration status (also enables marker detection on backend)
+        sendCalibrationMessage({ type: 'get_calibration_status' });
+        
+        // Start periodic status updates while panel is open
+        startCalibrationPolling();
+    } else {
+        panel.classList.add('hidden');
+        toggleBtn.classList.remove('active');
+        
+        // Stop polling
+        stopCalibrationPolling();
+        
+        // Tell backend to exit Test Lab Mode
+        sendCalibrationMessage({ type: 'stop_calibration' });
+    }
+}
+
+let calibrationPollInterval = null;
+
+function startCalibrationPolling() {
+    if (calibrationPollInterval) return;
+    
+    calibrationPollInterval = setInterval(() => {
+        if (state.testLabMode && state.connected) {
+            sendCalibrationMessage({ type: 'get_calibration_status' });
+        }
+    }, 500); // Poll every 500ms
+}
+
+function stopCalibrationPolling() {
+    if (calibrationPollInterval) {
+        clearInterval(calibrationPollInterval);
+        calibrationPollInterval = null;
+    }
+}
+
+function handleCalibrationStatus(data) {
+    // Update state
+    state.calibration.markersDetected = data.marker_ids_detected || [];
+    state.calibration.homographyValid = data.homography_valid || false;
+    state.calibration.intrinsicsValid = data.intrinsics_valid || false;
+    state.calibration.undistortionEnabled = data.undistortion_enabled || false;
+    
+    // Update marker detection UI
+    updateMarkerDetectionUI(data);
+    
+    // Update homography status
+    updateHomographyStatusUI(data);
+    
+    // Update intrinsics status
+    updateIntrinsicsStatusUI(data);
+    
+    // Update mat dimensions if provided
+    if (data.mat_dimensions) {
+        document.getElementById('mat-width').value = data.mat_dimensions.width_m;
+        document.getElementById('mat-height').value = data.mat_dimensions.height_m;
+    }
+    
+    // Show message or error if provided
+    if (data.message) {
+        showCalibrationMessage(data.message, 'success');
+    } else if (data.error) {
+        showCalibrationMessage(data.error, 'error');
+    }
+}
+
+function updateMarkerDetectionUI(data) {
+    const cornerMarkers = [0, 1, 2, 3];
+    const detectedIds = data.marker_ids_detected || [];
+    
+    cornerMarkers.forEach(id => {
+        const element = document.getElementById(`marker-${id}`);
+        if (element) {
+            const stateSpan = element.querySelector('.marker-state');
+            const isDetected = detectedIds.includes(id);
+            
+            if (isDetected) {
+                element.classList.add('detected');
+                stateSpan.textContent = '✓';
+            } else {
+                element.classList.remove('detected');
+                stateSpan.textContent = '--';
+            }
+        }
+    });
+    
+    // Update summary
+    const detectedCount = cornerMarkers.filter(id => detectedIds.includes(id)).length;
+    const summarySpan = document.getElementById('markers-detected');
+    if (summarySpan) {
+        summarySpan.textContent = detectedCount;
+    }
+}
+
+function updateHomographyStatusUI(data) {
+    const statusDiv = document.getElementById('homography-status');
+    if (!statusDiv) return;
+    
+    const indicator = statusDiv.querySelector('.status-indicator');
+    const text = statusDiv.querySelector('span:last-child');
+    
+    if (data.homography_valid) {
+        indicator.classList.add('calibrated');
+        indicator.classList.remove('not-calibrated');
+        text.textContent = 'Calibrated';
+    } else {
+        indicator.classList.remove('calibrated');
+        indicator.classList.add('not-calibrated');
+        text.textContent = 'Not Calibrated';
+    }
+}
+
+function updateIntrinsicsStatusUI(data) {
+    const statusDiv = document.getElementById('intrinsics-status');
+    const toggle = document.getElementById('undistort-toggle');
+    
+    if (statusDiv) {
+        const indicator = statusDiv.querySelector('.status-indicator');
+        const text = statusDiv.querySelector('span:last-child');
+        
+        if (data.intrinsics_valid) {
+            indicator.classList.add('calibrated');
+            indicator.classList.remove('not-calibrated');
+            text.textContent = 'Calibrated';
+            if (toggle) toggle.disabled = false;
+        } else {
+            indicator.classList.remove('calibrated');
+            indicator.classList.add('not-calibrated');
+            text.textContent = 'Not Calibrated';
+            if (toggle) toggle.disabled = true;
+        }
+    }
+    
+    if (toggle) {
+        toggle.checked = data.undistortion_enabled || false;
+    }
+}
+
+function handleDistanceTestResults(data) {
+    const results = data.results || {};
+    
+    // Update each test row - markers at 30cm, 60cm, 80cm
+    const testMappings = {
+        '0.30m': { measured: 'test-30cm', error: 'error-30cm' },
+        '0.60m': { measured: 'test-60cm', error: 'error-60cm' },
+        '0.80m': { measured: 'test-80cm', error: 'error-80cm' },
+    };
+    
+    for (const [distance, ids] of Object.entries(testMappings)) {
+        const measuredEl = document.getElementById(ids.measured);
+        const errorEl = document.getElementById(ids.error);
+        
+        if (results[distance]) {
+            const result = results[distance];
+            
+            if (measuredEl) {
+                measuredEl.textContent = result.measured.toFixed(3) + 'm';
+            }
+            
+            if (errorEl) {
+                const errorMm = result.error_mm;
+                errorEl.textContent = (errorMm >= 0 ? '+' : '') + errorMm.toFixed(1) + 'mm';
+                
+                // Color code based on error magnitude
+                errorEl.classList.remove('good', 'warning', 'bad');
+                if (Math.abs(errorMm) <= 5) {
+                    errorEl.classList.add('good');
+                } else if (Math.abs(errorMm) <= 15) {
+                    errorEl.classList.add('warning');
+                } else {
+                    errorEl.classList.add('bad');
+                }
+            }
+        } else {
+            if (measuredEl) measuredEl.textContent = '--';
+            if (errorEl) {
+                errorEl.textContent = '--';
+                errorEl.classList.remove('good', 'warning', 'bad');
+            }
+        }
+    }
+    
+    showCalibrationMessage('Distance tests complete', 'success');
+}
+
+function handleIntrinsicsProgress(data) {
+    const framesEl = document.getElementById('intrinsics-frames');
+    const computeBtn = document.getElementById('btn-compute-intrinsics');
+    
+    if (framesEl) {
+        framesEl.textContent = data.frames_collected || 0;
+    }
+    
+    if (computeBtn) {
+        computeBtn.disabled = (data.frames_collected || 0) < 5;
+    }
+    
+    if (data.message) {
+        showCalibrationMessage(data.message, data.success ? 'success' : 'info');
+    }
+}
+
+function showCalibrationMessage(message, type = 'info') {
+    // Log to console
+    const prefix = type === 'error' ? '❌' : type === 'success' ? '✓' : 'ℹ️';
+    console.log(`[Calibration] ${prefix} ${message}`);
+    
+    // Show toast notification in the UI
+    const existingToast = document.getElementById('calibration-toast');
+    if (existingToast) {
+        existingToast.remove();
+    }
+    
+    const toast = document.createElement('div');
+    toast.id = 'calibration-toast';
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        z-index: 10000;
+        animation: toastSlideIn 0.3s ease;
+        background: ${type === 'error' ? 'rgba(255, 80, 80, 0.95)' : type === 'success' ? 'rgba(74, 222, 128, 0.95)' : 'rgba(100, 100, 100, 0.95)'};
+        color: ${type === 'error' || type === 'success' ? '#000' : '#fff'};
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    `;
+    
+    document.body.appendChild(toast);
+    
+    // Auto-remove after delay
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = 'opacity 0.3s ease';
+        setTimeout(() => toast.remove(), 300);
+    }, type === 'error' ? 5000 : 3000);
 }
 
 function animate() {
