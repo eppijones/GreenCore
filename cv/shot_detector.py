@@ -85,8 +85,14 @@ class ShotDetectorConfig:
     # Confidence thresholds
     min_confidence: float = 0.3  # Minimum confidence to report shot
     
-    # State reset
-    cooldown_ms: float = 800  # Time to wait before detecting new shot (reduced)
+    # State reset - auto-reset after this time, ready for next shot
+    cooldown_ms: float = 1000  # Wait 1 second after shot, then auto-ready for next
+    
+    # Ball settling - only used when explicitly enabled
+    require_ball_settle: bool = False  # If True, ball must settle before next shot
+    settling_time_ms: float = 400  # Ball must be stationary this long before shot allowed
+    settling_velocity_threshold: float = 0.08  # Max velocity to consider "stationary" (m/s)
+    settling_hysteresis: float = 0.12  # Once settling, allow up to this velocity before resetting (m/s)
 
 
 class ShotState:
@@ -94,6 +100,7 @@ class ShotState:
     IDLE = "idle"  # Waiting for ball movement
     DETECTING = "detecting"  # Shot in progress, measuring
     COOLDOWN = "cooldown"  # Just completed a shot, waiting
+    SETTLING = "settling"  # Ball must be stationary before new shot allowed
 
 
 class ShotDetector:
@@ -102,16 +109,19 @@ class ShotDetector:
     
     Optimized for low-latency operation with high-FPS cameras.
     
-    State machine:
+    State machine (default - auto-reset mode):
     IDLE -> DETECTING (when velocity exceeds threshold)
-    DETECTING -> IDLE (shot measured and reported)
-    DETECTING -> COOLDOWN (if measurement times out)
-    COOLDOWN -> IDLE (after cooldown period)
+    DETECTING -> COOLDOWN (shot measured or timeout)
+    COOLDOWN -> IDLE (after cooldown_ms - ready for next shot)
+    
+    No need to move ball back - just wait 1 second after shot and
+    you can hit the next one from wherever the ball is.
     
     Metrics calculated:
     - Ball speed (average over initial window)
     - Direction (relative to calibrated target line)
     - Confidence (based on tracking quality)
+    - Distance traveled (trajectory length)
     
     Low-latency features:
     - Early firing when confidence is high
@@ -138,7 +148,7 @@ class ShotDetector:
         self.config = config or ShotDetectorConfig()
         
         # State machine
-        self._state = ShotState.IDLE
+        self._state = ShotState.IDLE  # Start ready for shots
         self._state_start_time = time.time()
         
         # Trajectory buffer for current shot
@@ -153,6 +163,10 @@ class ShotDetector:
         # FPS tracking for adaptive timing
         self._recent_frame_times: deque = deque(maxlen=30)
         self._estimated_fps = 30.0
+        
+        # Settling state - tracks how long ball has been stationary
+        self._settling_start_time: float = 0.0
+        self._ball_stationary: bool = False
     
     def update(self, tracking_result: Optional[TrackingResult]):
         """
@@ -168,7 +182,10 @@ class ShotDetector:
             self._recent_frame_times.append(tracking_result.timestamp)
             self._update_fps_estimate()
         
-        if self._state == ShotState.IDLE:
+        if self._state == ShotState.SETTLING:
+            self._handle_settling_state(tracking_result, current_time)
+        
+        elif self._state == ShotState.IDLE:
             self._handle_idle_state(tracking_result, current_time)
         
         elif self._state == ShotState.DETECTING:
@@ -203,6 +220,64 @@ class ShotDetector:
                     min(self.config.max_window_ms, ideal_window))
         
         return window
+    
+    def _handle_settling_state(
+        self,
+        tracking_result: Optional[TrackingResult],
+        current_time: float
+    ):
+        """
+        Handle SETTLING state - waiting for ball to be stationary.
+        
+        Ball must be:
+        1. Detected
+        2. Moving slower than settling_velocity_threshold
+        3. Stationary for settling_time_ms
+        
+        Uses hysteresis: once settling starts, allows slightly higher velocity
+        before resetting (to handle detection jitter).
+        
+        Only then can we transition to IDLE for shot detection.
+        This prevents false triggers when moving the ball back.
+        """
+        if not tracking_result or not tracking_result.detected:
+            # Ball not detected - reset settling timer
+            self._ball_stationary = False
+            self._settling_start_time = 0.0
+            return
+        
+        speed = tracking_result.speed
+        
+        # Use hysteresis: different thresholds for entering vs exiting settling
+        if self._ball_stationary:
+            # Already settling - use higher threshold (hysteresis) to avoid noise resets
+            threshold = self.config.settling_hysteresis
+        else:
+            # Not settling yet - use lower threshold to start
+            threshold = self.config.settling_velocity_threshold
+        
+        is_stationary = speed < threshold
+        
+        if is_stationary:
+            if not self._ball_stationary:
+                # Just became stationary - start timer
+                self._ball_stationary = True
+                self._settling_start_time = current_time
+                # Don't spam logs - only print once when settling starts
+            else:
+                # Still stationary - check if we've waited long enough
+                elapsed_ms = (current_time - self._settling_start_time) * 1000
+                if elapsed_ms >= self.config.settling_time_ms:
+                    # Ball has been stationary long enough - ready for next shot
+                    print(f"[Shot] Ball settled! Ready for shot ({elapsed_ms:.0f}ms stationary)")
+                    self._state = ShotState.IDLE
+                    self._ball_stationary = False
+                    self._settling_start_time = 0.0
+        else:
+            # Ball is moving too fast - reset settling timer
+            # Don't print to avoid log spam from detection jitter
+            self._ball_stationary = False
+            self._settling_start_time = 0.0
     
     def _handle_idle_state(
         self, 
@@ -320,8 +395,11 @@ class ShotDetector:
         elapsed_ms = (current_time - self._state_start_time) * 1000
         
         if elapsed_ms >= self.config.cooldown_ms:
+            # Auto-ready for next shot - no need to move ball back
             self._state = ShotState.IDLE
             self._shot_trajectory = []
+            self._ball_stationary = False
+            self._settling_start_time = 0.0
             print("[Shot] Ready for next shot")
     
     def _complete_shot(self, current_time: float):
@@ -539,7 +617,9 @@ class ShotDetector:
         """Reset detector state."""
         self._state = ShotState.IDLE
         self._shot_trajectory = []
-        print("[Shot] Reset")
+        self._ball_stationary = False
+        self._settling_start_time = 0.0
+        print("[Shot] Reset - ready for shot")
     
     def update_config_from_dict(self, config_dict: dict):
         """
@@ -591,5 +671,9 @@ class ShotDetector:
             return f"Ready ({self._estimated_fps:.0f}fps)"
         elif self._state == ShotState.DETECTING:
             return f"Detecting... ({len(self._shot_trajectory)} frames)"
+        elif self._state == ShotState.COOLDOWN:
+            elapsed_ms = (time.time() - self._state_start_time) * 1000
+            remaining = max(0, self.config.cooldown_ms - elapsed_ms)
+            return f"Cooldown ({remaining/1000:.1f}s)"
         else:
-            return "Cooldown"
+            return "Ready"

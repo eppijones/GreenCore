@@ -47,12 +47,12 @@ class DetectorConfig:
     # Ball physical size
     ball_diameter_cm: float = 4.27  # Standard golf ball
     
-    # Detection tolerances
-    size_tolerance: float = 0.4     # Allow ±40% from expected size
-    min_circularity: float = 0.65   # Minimum circularity score
+    # Detection tolerances - more lenient for varying lighting
+    size_tolerance: float = 0.5     # Allow ±50% from expected size
+    min_circularity: float = 0.60   # Minimum circularity score (lowered for edge cases)
     
     # Brightness threshold for white ball detection
-    brightness_threshold: int = 180  # Threshold for white ball (0-255)
+    brightness_threshold: int = 80  # Threshold for white ball (0-255) - lowered for edge detection
     
     # ROI (optional - None means full frame)
     roi: Optional[Tuple[int, int, int, int]] = None  # (x, y, w, h)
@@ -167,60 +167,77 @@ class BallDetector:
         offset_y: int,
         timestamp: float
     ) -> BallDetection:
-        """Detect ball using threshold + contour analysis."""
+        """
+        Detect ball using threshold + contour analysis.
+        
+        Uses CLAHE for adaptive local contrast enhancement,
+        then multi-threshold approach for robustness.
+        """
         cfg = self.config
         
-        # Threshold for white ball
-        _, thresh = cv2.threshold(
-            gray, cfg.brightness_threshold, 255, cv2.THRESH_BINARY
-        )
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # This is better than global histogram eq for local contrast
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray_enhanced = clahe.apply(gray)
         
-        # Morphological cleanup
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(
-            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        
-        # Size constraints
-        min_area = np.pi * cfg.min_radius**2 * 0.5
-        max_area = np.pi * cfg.max_radius**2 * 1.5
+        # Try multiple threshold values for robustness
+        # This helps when lighting varies across the frame
+        thresholds = [cfg.brightness_threshold, cfg.brightness_threshold + 20, cfg.brightness_threshold - 20]
         
         best_match = None
         best_score = 0
         
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < min_area or area > max_area:
-                continue
+        for thresh_val in thresholds:
+            thresh_val = max(50, min(200, thresh_val))  # Clamp to valid range
             
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter == 0:
-                continue
+            # Threshold for white ball
+            _, thresh = cv2.threshold(
+                gray_enhanced, thresh_val, 255, cv2.THRESH_BINARY
+            )
             
-            # Circularity score
-            circularity = 4 * np.pi * area / (perimeter ** 2)
-            if circularity < cfg.min_circularity:
-                continue
+            # Morphological cleanup
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
             
-            # Get enclosing circle
-            (cx, cy), radius = cv2.minEnclosingCircle(contour)
+            # Find contours
+            contours, _ = cv2.findContours(
+                thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
             
-            # Verify radius
-            if not (cfg.min_radius <= radius <= cfg.max_radius):
-                continue
+            # Size constraints - be more lenient
+            min_area = np.pi * cfg.min_radius**2 * 0.3
+            max_area = np.pi * cfg.max_radius**2 * 2.0
             
-            # Score based on circularity and size match
-            expected_r = cfg.expected_ball_px / 2
-            size_match = 1.0 - abs(radius - expected_r) / expected_r
-            score = circularity * 0.6 + size_match * 0.4
-            
-            if score > best_score:
-                best_score = score
-                best_match = (int(cx), int(cy), int(radius), score)
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < min_area or area > max_area:
+                    continue
+                
+                perimeter = cv2.arcLength(contour, True)
+                if perimeter == 0:
+                    continue
+                
+                # Circularity score
+                circularity = 4 * np.pi * area / (perimeter ** 2)
+                if circularity < cfg.min_circularity:
+                    continue
+                
+                # Get enclosing circle
+                (cx, cy), radius = cv2.minEnclosingCircle(contour)
+                
+                # Looser radius check
+                if radius < cfg.min_radius * 0.7 or radius > cfg.max_radius * 1.3:
+                    continue
+                
+                # Score based on circularity and size match
+                expected_r = cfg.expected_ball_px / 2
+                size_match = 1.0 - min(1.0, abs(radius - expected_r) / expected_r)
+                score = circularity * 0.5 + size_match * 0.5
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = (int(cx), int(cy), int(radius), score)
         
         if best_match:
             cx, cy, radius, score = best_match

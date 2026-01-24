@@ -65,8 +65,8 @@ class AlignmentConfig:
     roi_height: int = 620    # Leaves room for status bar at bottom
     
     # Divider position (fraction of ROI width for putting/hitting zone)
-    # Hitting zone is small (just where ball starts), runway is for speed measurement
-    putting_zone_fraction: float = 0.15  # ~190px for hitting area, rest is runway
+    # Hitting zone is where ball starts - adjusted to match actual ball position
+    putting_zone_fraction: float = 0.28  # ~350px for hitting area, rest is runway
     
     # Scale (pixels per cm) - calibrated for 80cm camera height
     # Formula: scale = focal_length * real_size / distance
@@ -404,10 +404,25 @@ class PuttingTracker:
                 dx = world_x - last.world_x
                 dy = world_y - last.world_y
                 
-                # Smooth velocity with exponential filter
-                alpha = 0.4
-                velocity_x = alpha * (dx / dt) + (1 - alpha) * self._velocity[0]
-                velocity_y = alpha * (dy / dt) + (1 - alpha) * self._velocity[1]
+                # Calculate displacement in pixels for noise filtering
+                dx_px = detection.x - last.pixel_x
+                dy_px = detection.y - last.pixel_y
+                displacement_px = math.sqrt(dx_px**2 + dy_px**2)
+                
+                # Filter out sub-pixel jitter (detection noise)
+                # At 120fps, 1-2 pixel jitter creates false velocity readings
+                # Only update velocity if ball moved more than 2 pixels
+                if displacement_px > 2.0:
+                    # Smooth velocity with exponential filter
+                    # Higher alpha = more responsive, lower = more stable
+                    alpha = 0.3  # Slightly lower for better stability
+                    velocity_x = alpha * (dx / dt) + (1 - alpha) * self._velocity[0]
+                    velocity_y = alpha * (dy / dt) + (1 - alpha) * self._velocity[1]
+                else:
+                    # Ball essentially stationary - decay velocity toward zero
+                    decay = 0.7  # Quick decay when stationary
+                    velocity_x = self._velocity[0] * decay
+                    velocity_y = self._velocity[1] * decay
                 
                 self._velocity = (velocity_x, velocity_y)
         
@@ -589,7 +604,7 @@ class PuttingTracker:
         shot = self.last_shot
         
         # Draw shot info box in top-right corner
-        box_w, box_h = 250, 120
+        box_w, box_h = 250, 145
         box_x = w - box_w - 10
         box_y = 10
         
@@ -616,9 +631,15 @@ class PuttingTracker:
                    (box_x + 15, box_y + 80),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, dir_color, 1)
         
+        # Measured distance (tracked trajectory)
+        dist_cm = shot.trajectory_length_m * 100
+        cv2.putText(frame, f"Tracked: {dist_cm:.0f}cm",
+                   (box_x + 15, box_y + 105),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+        
         # Latency
         cv2.putText(frame, f"Latency: {shot.latency_estimate_ms:.0f}ms",
-                   (box_x + 15, box_y + 105),
+                   (box_x + 15, box_y + 130),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
     
     def _draw_status_bar(self, frame: np.ndarray):

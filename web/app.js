@@ -47,12 +47,18 @@ const state = {
         position: new THREE.Vector3(0, CONFIG.ballRadius, 0),
         velocity: new THREE.Vector2(0, 0),
         isRolling: false,
+        trail: [],  // Ghost trail positions
     },
     ws: null,
     connected: false,
     clock: new THREE.Clock(),
     showAimLines: true,
+    lastMeasuredDistance: 0,  // Tracked distance from camera (meters)
 };
+
+// Trail visualization
+let trailLine = null;
+const TRAIL_MAX_POINTS = 500;
 
 // ============================================================================
 // Three.js Globals
@@ -270,13 +276,18 @@ function createAimingGuides() {
 function startShot(speedMps, directionDeg) {
     if (state.ball.isRolling) return; // Prevent double hits
     
-    // Convert degrees to radians (0 deg = straight to hole = -Z)
-    // Standard Math: 0 is +X. We want 0 to be -Z.
-    // So angle = directionDeg + 90 (to align with Z axis rotation logic)
-    // Actually simpler: 
-    // z component = -cos(angle)
-    // x component = sin(angle)
+    // Clear previous trail
+    state.ball.trail = [];
+    clearTrail();
     
+    // Add starting position to trail
+    state.ball.trail.push(new THREE.Vector3(
+        state.ball.position.x,
+        0.005,  // Just above ground
+        state.ball.position.z
+    ));
+    
+    // Convert degrees to radians (0 deg = straight to hole = -Z)
     const angleRad = (directionDeg * Math.PI) / 180;
     
     state.ball.velocity.x = speedMps * Math.sin(angleRad);
@@ -320,6 +331,23 @@ function updatePhysics(dt) {
     // Update mesh
     ballMesh.position.copy(state.ball.position);
     
+    // Record trail position (sample every few frames for performance)
+    if (state.ball.trail.length < TRAIL_MAX_POINTS) {
+        const lastTrail = state.ball.trail[state.ball.trail.length - 1];
+        const dist = lastTrail ? 
+            Math.sqrt((state.ball.position.x - lastTrail.x)**2 + (state.ball.position.z - lastTrail.z)**2) : 
+            0.1;
+        // Add point every ~1cm of travel
+        if (dist > 0.01) {
+            state.ball.trail.push(new THREE.Vector3(
+                state.ball.position.x,
+                0.005,
+                state.ball.position.z
+            ));
+            updateTrail();
+        }
+    }
+    
     // Rotation (visual only)
     ballMesh.rotation.x -= state.ball.velocity.y * step / CONFIG.ballRadius;
     ballMesh.rotation.z += state.ball.velocity.x * step / CONFIG.ballRadius;
@@ -347,13 +375,23 @@ function checkHole() {
 function stopBall(msg) {
     state.ball.isRolling = false;
     
+    // Calculate putt distance traveled (from start position at z=0)
+    const puttDistance = Math.abs(state.ball.position.z);
+    
     // Calculate final distance to hole
-    const dist = Math.sqrt(
+    const distToHole = Math.sqrt(
         state.ball.position.x**2 + 
         (state.ball.position.z + CONFIG.holeDistance)**2
     );
     
-    showResult(msg || (dist < 0.2 ? "GIMME!" : `${dist.toFixed(2)}m LEFT`));
+    // Show putt distance and distance to hole
+    if (distToHole < 0.05) {
+        showResult("SUNK IT!", `${(puttDistance * 100).toFixed(0)}cm putt`);
+    } else if (distToHole < 0.2) {
+        showResult("GIMME!", `${(puttDistance * 100).toFixed(0)}cm putt • ${(distToHole * 100).toFixed(0)}cm to hole`);
+    } else {
+        showResult(msg || `${(puttDistance * 100).toFixed(0)}cm PUTT`, `${(distToHole * 100).toFixed(0)}cm to hole`);
+    }
 }
 
 function ballInHole() {
@@ -375,6 +413,9 @@ function resetBall() {
     // Clear shot lines
     const existingShot = scene.getObjectByName('shotRay');
     if (existingShot) scene.remove(existingShot);
+    
+    // Clear trail
+    clearTrail();
     
     // Reset camera
     resetCamera();
@@ -408,6 +449,50 @@ function showShotRay(angleRad, speed) {
     scene.add(line);
 }
 
+function updateTrail() {
+    // Remove old trail
+    if (trailLine) {
+        scene.remove(trailLine);
+        trailLine.geometry.dispose();
+        trailLine.material.dispose();
+    }
+    
+    if (state.ball.trail.length < 2) return;
+    
+    // Create gradient trail - fades from start to end
+    const geometry = new THREE.BufferGeometry().setFromPoints(state.ball.trail);
+    
+    // Create gradient colors (fade from dim to bright)
+    const colors = [];
+    for (let i = 0; i < state.ball.trail.length; i++) {
+        const t = i / (state.ball.trail.length - 1);
+        // Orange/yellow gradient for visibility
+        colors.push(1.0, 0.5 + t * 0.5, t * 0.3);  // RGB
+    }
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    
+    const material = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        linewidth: 2,
+        transparent: true,
+        opacity: 0.8,
+    });
+    
+    trailLine = new THREE.Line(geometry, material);
+    trailLine.name = 'ballTrail';
+    scene.add(trailLine);
+}
+
+function clearTrail() {
+    if (trailLine) {
+        scene.remove(trailLine);
+        trailLine.geometry.dispose();
+        trailLine.material.dispose();
+        trailLine = null;
+    }
+    state.ball.trail = [];
+}
+
 function showResult(main, sub = "") {
     const el = document.getElementById('result-overlay');
     document.getElementById('result-main').textContent = main;
@@ -431,6 +516,8 @@ function setupWebSocket() {
         try {
             const data = JSON.parse(e.data);
             if (data.speed_mps) {
+                // Store measured distance from camera tracking for display
+                state.lastMeasuredDistance = data.trajectory_length_m || 0;
                 updateHUD(data);
                 startShot(data.speed_mps, data.direction_deg);
             }
@@ -443,8 +530,24 @@ function updateHUD(data) {
     document.getElementById('val-angle').textContent = data.direction_deg.toFixed(1) + "°";
     
     // Est distance physics formula: d = v^2 / 2ug
-    const dist = (data.speed_mps ** 2) / (2 * 9.81 * CONFIG.friction);
-    document.getElementById('val-dist').textContent = dist.toFixed(1) + "m";
+    const estDist = (data.speed_mps ** 2) / (2 * 9.81 * CONFIG.friction);
+    
+    // Use measured tracking distance if available, otherwise estimate
+    const trackDist = data.trajectory_length_m || 0;
+    const displayDist = trackDist > 0.01 ? trackDist : estDist;
+    
+    // Show in cm for short putts, m for longer
+    if (displayDist < 1.0) {
+        document.getElementById('val-dist').textContent = (displayDist * 100).toFixed(0) + "cm";
+    } else {
+        document.getElementById('val-dist').textContent = displayDist.toFixed(2) + "m";
+    }
+    
+    // If we have tracked distance, show it as "measured"
+    const distEl = document.getElementById('val-dist');
+    if (trackDist > 0.01) {
+        distEl.title = `Measured: ${(trackDist * 100).toFixed(0)}cm | Est: ${(estDist * 100).toFixed(0)}cm`;
+    }
 }
 
 function setupEvents() {

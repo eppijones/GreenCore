@@ -10,5 +10,16 @@
   "pixels_per_meter": 16.55294535724685,
   "ground_depth": 0.5,
   "depth_tolerance": 0.05,
-  "forward_angle_rad": 0.0
+  "forward_angle_rad": 0.0,
+  "alignment": {
+    "roi_x": 5,
+    "roi_y": 100,
+    "roi_width": 1270,
+    "roi_height": 620,
+    "putting_zone_fraction": 0.15,
+    "scale_px_per_cm": 11.24121779859485,
+    "camera_height_cm": 80.0,
+    "locked": true,
+    "tracking_enabled": true
+  }
 }
